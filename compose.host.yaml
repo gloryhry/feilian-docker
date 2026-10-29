@@ -1,0 +1,53 @@
+name: feilian
+
+# 宿主网络模式：容器直接使用宿主机网络栈（包括 WiFi / 代理 / VPN 路径）。
+# 适用场景：宿主机上的透明代理、防火墙把 docker bridge 出网打断时（本机就是这种）。
+#
+# 代价（务必知悉）：
+#   1) 飞连建的 tun / 路由落在宿主机 netns 上，连上 VPN 会影响宿主机流量；
+#   2) 容器能访问宿主机回环上的服务（文件仍然隔离）。
+# 不用时 docker compose -f compose.host.yaml down 即可，路由随 tun 一起消失。
+services:
+  feilian:
+    image: ${TAG:-feilian-gui:3.2.16}
+    container_name: feilian
+    hostname: feilian
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 15s
+    shm_size: 256m
+    network_mode: host
+
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    devices:
+      - /dev/net/tun:/dev/net/tun
+
+    environment:
+      GUI_MODE: ${GUI_MODE:-vnc}
+      VNC_GEOMETRY: ${VNC_GEOMETRY:-1600x1000x24}
+      VNC_PASSWORD: ${VNC_PASSWORD:-}
+      # host 网络下必须只监听回环，否则窗口直接暴露在 0.0.0.0:6080
+      NOVNC_BIND: 127.0.0.1
+      NOVNC_PORT: 6080
+      START_NETWORKMANAGER: ${START_NETWORKMANAGER:-0}
+      START_SERVICE: ${START_SERVICE:-1}
+      START_GUI: ${START_GUI:-1}
+
+    volumes:
+      - feilian-home:/home/feilian
+      - feilian-root:/root
+      - feilian-logs:/var/log/feilian
+
+    security_opt:
+      - no-new-privileges:true
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+
+volumes:
+  feilian-home:
+  feilian-root:
+  feilian-logs:

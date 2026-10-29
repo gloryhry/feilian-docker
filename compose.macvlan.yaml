@@ -1,0 +1,47 @@
+name: feilian
+
+# macvlan：容器以独立 MAC/IP 直接出现在宿主机所在二层网络里（有线可用；WiFi STA 基本不可用）
+# 先执行：bash scripts/net-macvlan.sh create
+services:
+  feilian:
+    image: ${TAG:-feilian-gui:3.2.16}
+    container_name: feilian
+    hostname: feilian
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 15s
+    shm_size: 256m
+
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    devices:
+      - /dev/net/tun:/dev/net/tun
+
+    environment:
+      GUI_MODE: ${GUI_MODE:-vnc}
+      VNC_GEOMETRY: ${VNC_GEOMETRY:-1600x1000x24}
+      VNC_PASSWORD: ${VNC_PASSWORD:-}
+      NOVNC_BIND: 0.0.0.0
+      NOVNC_PORT: 6080
+      START_NETWORKMANAGER: ${START_NETWORKMANAGER:-1}
+
+    volumes:
+      - feilian-home:/home/feilian
+      - feilian-root:/root
+      - feilian-logs:/var/log/feilian
+
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      feilian-macvlan:
+        ipv4_address: ${MACVLAN_IP:-192.168.0.231}
+
+volumes:
+  feilian-home:
+  feilian-root:
+  feilian-logs:
+
+networks:
+  feilian-macvlan:
+    external: true

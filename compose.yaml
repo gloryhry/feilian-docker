@@ -1,0 +1,63 @@
+name: feilian
+
+# 默认网络：Docker bridge + NAT。容器通过宿主机现有网络（笔记本上就是 WiFi）出网。
+# 本机若有多层透明代理/防火墙导致 bridge 出网不可用，run.sh 会自动切到 compose.host.yaml。
+services:
+  feilian:
+    image: ${TAG:-feilian-gui:3.2.16}
+    build:
+      context: .
+      network: host
+      args:
+        DEBIAN_MIRROR: ${DEBIAN_MIRROR:-}
+    container_name: feilian
+    hostname: feilian
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 15s
+    shm_size: 256m
+
+    # 飞连需要建 tun、改路由；只需要这两个 capability，绝不给 SYS_ADMIN / privileged
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    devices:
+      - /dev/net/tun:/dev/net/tun
+
+    ports:
+      # 只绑宿主机回环：从外部网络无法访问这个窗口
+      - "127.0.0.1:${NOVNC_PORT:-6080}:6080"
+
+    environment:
+      GUI_MODE: ${GUI_MODE:-vnc}
+      VNC_GEOMETRY: ${VNC_GEOMETRY:-1600x1000x24}
+      VNC_PASSWORD: ${VNC_PASSWORD:-}
+      NOVNC_BIND: 0.0.0.0
+      NOVNC_PORT: 6080
+      START_NETWORKMANAGER: ${START_NETWORKMANAGER:-1}
+      START_SERVICE: ${START_SERVICE:-1}
+      START_GUI: ${START_GUI:-1}
+
+    volumes:
+      # 全部是 docker 命名卷 => 不是宿主机目录，容器看不到宿主机任何文件
+      - feilian-home:/home/feilian
+      - feilian-root:/root
+      - feilian-logs:/var/log/feilian
+
+    security_opt:
+      - no-new-privileges:true
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    networks:
+      - feilian-net
+
+volumes:
+  feilian-home:
+  feilian-root:
+  feilian-logs:
+
+networks:
+  feilian-net:
+    driver: bridge

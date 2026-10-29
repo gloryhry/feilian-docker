@@ -1,0 +1,4 @@
+dist/*.deb
+artifacts/
+.env
+*.log

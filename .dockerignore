@@ -1,0 +1,9 @@
+# 构建上下文：只需要安装包 + 脚本
+dist/
+!dist/FeiLian_Linux_amd64_*.deb
+artifacts/
+verify/
+*.md
+!README.md
+.git/
+.env
