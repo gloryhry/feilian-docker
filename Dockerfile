@@ -63,7 +63,7 @@ RUN chmod 755 /opt/feilian/scripts/entrypoint.sh /opt/feilian/scripts/feilian-gu
  && ln -s /opt/feilian/scripts/feilian-gui.sh /usr/local/bin/feilian-gui.sh
 
 LABEL io.feilian.runtime.schema="1" \
-      io.feilian.features="config,artifact-lock" \
+      io.feilian.features="config,artifact-lock,web-auth,web-tls,vpn-state,dns-sync,dual-proxy,egress-guard,gateway" \
       io.feilian.client.version="${CLIENT_VERSION}" \
       io.feilian.client.revision="${CLIENT_REVISION}" \
       org.opencontainers.image.title="FeiLian container runtime"
@@ -79,9 +79,10 @@ ENV GUI_MODE=vnc \
     START_GUI=1
 WORKDIR /opt/feilian
 EXPOSE 6080
-# Process liveness only, not a claim that the VPN has authenticated or is ready.
-HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
-    CMD pgrep -f '/opt/apps/com.volcengine.feilian/files/corplink-service' >/dev/null || exit 1
+# Container liveness only. It deliberately does NOT claim the VPN is ready:
+# `scripts/status.sh` and the controller's readiness TTL carry that meaning.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD python3 /opt/feilian/runtime/supervisor.py health --state-dir /run/feilian || exit 1
 ENTRYPOINT ["/opt/feilian/scripts/entrypoint.sh"]
 
 # This target never inherits production and never references client_dist.

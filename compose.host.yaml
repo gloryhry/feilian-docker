@@ -57,6 +57,7 @@ services:
       - feilian-home:/home/feilian
       - feilian-root:/root
       - feilian-logs:/var/log/feilian
+      - feilian-secrets:/run/feilian-secrets:ro
     security_opt:
       - no-new-privileges:true
     ulimits:
@@ -73,3 +74,6 @@ volumes:
   feilian-home:
   feilian-root:
   feilian-logs:
+  feilian-secrets:
+    external: true
+    name: ${PROJECT_NAME:-feilian}-secrets

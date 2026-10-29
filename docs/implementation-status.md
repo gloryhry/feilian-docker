@@ -36,6 +36,10 @@
 - 真实依赖层构建：`docker buildx build --target runtime-dependencies --platform linux/amd64 --load` 成功（264s，镜像 `feilian-runtime-deps:3.2.16-dev`），显式 `--network host` 仅用于适配本机代理。构建后实测镜像内 microsocks/privoxy/nginx/websockify/nft/dnsmasq/x11vnc/xmessage 均存在，feilian/feilian-socks/feilian-http 与 feilian-proxy 组已创建，zh_CN.utf8 locale 已生成。
 - 发现并修正两个真实缺陷：Debian trixie **没有 dante-server 包**（APT 报 Unable to locate），数据面改为同源可用包 microsocks（`-b` 绑定出站 VPN 源地址，ACL 由 nft guard 承担）；vpn-state 中断导致 DNS 严格接口校验与测试不同步，已补齐夹具后 24 项 DNS 测试恢复全绿。
 - 当前整体离线测试：243 项全部 PASS（11.97s），由 Lead 实际执行。
+- 真实 production 镜像构建成功：`docker buildx build --target production --platform linux/amd64 --load --build-context client_dist=dist/3.2.16`（镜像 `feilian-official:3.2.16-dev`，672,543,394 字节）。镜像内构建阶段打印 `/tmp/feilian-dist/amd64/client.deb: OK`，即 SHA256 与 DEB 头二次校验通过后才解包。容器内实测 `corplink`/`corplink-service` 存在，`ldd` 未发现缺失共享库（0/0），labels 含 `io.feilian.client.kind=official`、`runtime.schema=1`。
+- 运行时编排真实冒烟（mock 镜像 `feilian-mock:smoke1`，--network none，按 Compose 显式能力清单）：system dbus 就绪；supervisor 托管 service/controller/dnsmasq/x11vnc/nginx；`supervisor.py health` 退出 0；`vpn_state.py status` 返回 `state=UNCONFIGURED, ready=false, reason=corporate_probe_not_configured`；dnsmasq 仅监听 127.0.0.1:53，x11vnc 127.0.0.1:5900，mock 服务 31055/31056；`docker stop -t 25` 正常排空退出。数据面保持 closed，未伪造 READY。
+- 期间发现并修复：`--cap-drop ALL` 会让 dbus-daemon 无法降权而启动失败（`Failed to drop capabilities`），必须使用 Compose 中的显式能力清单；entrypoint 已按此运行。
+- 尚未执行：管理网关鉴权+TLS 端到端（未生成秘密卷）、官方客户端真实登录/隧道、L2 包级防泄漏验收、ARM64 运行、GitHub 推送与私有 GHCR 发布。
 - Git 作者身份已配置；非交互 git push --dry-run 预检 exit 0，远端可接受目标功能分支。未实际推送。GitHub CLI 不存在，不因此安装系统工具。
 - 旧 README 实测不自动当作新代码验收证据。
 

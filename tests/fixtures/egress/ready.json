@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "project": "unit-feilian",
+  "network_mode": "bridge",
+  "ready": true,
+  "vpn_interface": "tun-test",
+  "vpn_ipv4": ["10.99.0.2"],
+  "vpn_dns": ["10.60.0.53"],
+  "corp_cidrs": ["10.60.0.0/16"],
+  "source_cidrs": [],
+  "management_cidrs": ["172.30.0.0/24"],
+  "access_interface": "eth0",
+  "bridge_gateway": "172.30.0.1",
+  "macvlan_shim": false,
+  "http_port": 8118,
+  "socks_port": 1080,
+  "connect_ports": [443],
+  "gateway": {
+    "enabled": false,
+    "source_cidrs": [],
+    "access_subnet": "",
+    "gateway_ipv4": "",
+    "mss": "off"
+  }
+}

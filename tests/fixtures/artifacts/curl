@@ -1,0 +1,38 @@
+#!/usr/bin/env python3
+"""Network-free curl stand-in used only by artifact unit tests."""
+
+import json
+import os
+from pathlib import Path
+import signal
+import sys
+
+args = sys.argv[1:]
+with Path(os.environ["MOCK_CURL_LOG"]).open("a", encoding="utf-8") as log:
+    log.write(json.dumps(args) + "\n")
+if not args or args[0] != "--disable":
+    raise SystemExit(91)
+for option in ("--proto", "--max-time", "--connect-timeout", "--retry", "--max-filesize", "--max-redirs"):
+    if option not in args:
+        raise SystemExit(92)
+if "--location" in args or "-L" in args or "--insecure" in args or "-k" in args:
+    raise SystemExit(93)
+output = args[args.index("--output") + 1]
+url = args[args.index("--url") + 1]
+mode = os.environ.get("MOCK_CURL_MODE", "ok")
+if mode == "discovery":
+    sys.stdout.buffer.write(Path(os.environ["MOCK_CURL_DISCOVERY"]).read_bytes())
+    raise SystemExit(0)
+arch = "arm64" if "_arm64_" in url else "amd64"
+source = Path(os.environ["MOCK_CURL_SOURCE_DIR"]) / f"{arch}.deb"
+data = source.read_bytes()
+if mode == "interrupt":
+    Path(output).write_bytes(data[:37])
+    os.kill(os.getppid(), signal.SIGINT)
+    raise SystemExit(130)
+if mode == "partial":
+    Path(output).write_bytes(data[:37])
+    print("mock proxy error: PRIVATE_MARKER_MUST_NOT_LEAK", file=sys.stderr)
+    raise SystemExit(18)
+Path(output).write_bytes(data)
+sys.stdout.write("302" if mode == "redirect" else "200")

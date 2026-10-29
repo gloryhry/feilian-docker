@@ -52,6 +52,7 @@ services:
       - feilian-home:/home/feilian
       - feilian-root:/root
       - feilian-logs:/var/log/feilian
+      - feilian-secrets:/run/feilian-secrets:ro
     security_opt:
       - no-new-privileges:true
     logging:
@@ -67,6 +68,9 @@ volumes:
   feilian-home:
   feilian-root:
   feilian-logs:
+  feilian-secrets:
+    external: true
+    name: ${PROJECT_NAME:-feilian}-secrets
 
 networks:
   feilian-macvlan:
