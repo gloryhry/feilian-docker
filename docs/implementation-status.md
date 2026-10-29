@@ -41,7 +41,10 @@
 - 期间发现并修复：`--cap-drop ALL` 会让 dbus-daemon 无法降权而启动失败（`Failed to drop capabilities`），必须使用 Compose 中的显式能力清单；entrypoint 已按此运行。
 - G7 进展：功能分支 `feat/corplink-inspired-runtime` 已推送到 `github.com/gloryhry/feilian-docker`（`ls-remote` 显示 `36e58b1...`，随后追加 CI 提交 `03699e8`）。`git push --dry-run` 预检与实际推送均成功，未强推、未合并 main。
 - G6 进展：`.github/workflows/check.yml`（PR/push 仅离线：语法、单元、Compose 渲染、禁止提交安装包/秘密）与 `client-release.yml`（仅 workflow_dispatch、`private-release` 受保护环境、`vars.CLIENT_REDISTRIBUTION_APPROVED=true` 门禁、amd64+arm64 原生 runner、拒绝非 official 标签镜像）已落盘，并用真实 YAML 解析器校验通过；尚未在远端实际运行。
-- **GHCR 发布门禁（未完成）**：本机没有 `~/.docker/config.json`、无 `GH_TOKEN`/`GITHUB_TOKEN`/`CR_PAT`、无 gh CLI 配置；`ghcr.io` 匿名 token 端点返回 403、匿名 manifest 返回 401。私有镜像未推送，也没有伪造任何“已发布”结论。需要 YG 提供 GHCR 登录（或 GitHub Actions 凭据 + 设置受保护环境与再分发批准变量）。
+- **GHCR 发布门禁（仍未完成）**：YG 已在本地完成 `docker login ghcr.io`（`~/.docker/config.json` 出现 `ghcr.io` 条目，凭据未读取）。但三次 `docker push` 均在同一阶段失败：`failed commit on ref "layer-sha256:...": Put https://ghcr.io/v2/... net/http: timeout awaiting response headers`。已尝试拆小镜像层（apt 安装拆成 4 个 RUN，最大单层由 830MB 降到 751MB）后重推，仍在新的大 blob 上超时。结论：这是本机到 `ghcr.io` 的**上行链路超时**，不是层大小或凭据问题。
+  - 可行路径 A：在 GitHub Actions 上构建并推送（`.github/workflows/client-release.yml` 已实现，需要先把工作流合入默认分支才可用 `workflow_dispatch`，并配置 `private-release` 受保护环境 + `vars.CLIENT_REDISTRIBUTION_APPROVED=true`）。
+  - 可行路径 B：在带宽/代理更稳定的机器上用同一 tag 执行 `docker push`。
+  - 未伪造任何"已发布"结论；包当前仍为空（匿名 manifest 401）。
 - 尚未执行：管理网关鉴权+TLS 端到端（未生成秘密卷）、官方客户端真实登录/隧道、L2 包级防泄漏验收、ARM64 原生运行。
 - Git 作者身份已配置；非交互 git push --dry-run 预检 exit 0，远端可接受目标功能分支。未实际推送。GitHub CLI 不存在，不因此安装系统工具。
 - 旧 README 实测不自动当作新代码验收证据。

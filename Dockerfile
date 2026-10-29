@@ -16,6 +16,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 # The mirror is an explicit build setting, not an automatic host-network fallback.
 # Constrain sed replacement characters even if somebody bypasses build.sh.
+# Split into several RUN steps on purpose: each becomes its own layer, which keeps
+# individual registry blobs small enough to upload over a slow/proxied link.
 RUN set -eu; \
     if [ -n "$DEBIAN_MIRROR" ]; then \
         case "$DEBIAN_MIRROR" in http://*|https://*) ;; *) exit 2 ;; esac; \
@@ -26,15 +28,31 @@ RUN set -eu; \
     chmod 755 /usr/sbin/policy-rc.d; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
+        dbus dbus-x11 iproute2 iputils-ping procps psmisc \
+        ca-certificates curl locales; \
+    rm -rf /var/lib/apt/lists/*
+
+RUN set -eu; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
         xvfb xauth x11-utils x11-xserver-utils x11vnc novnc websockify scrot \
-        dbus dbus-x11 network-manager dnsmasq-base iw iproute2 iputils-ping \
-        procps psmisc ca-certificates curl locales \
+        fonts-noto-cjk fonts-dejavu-core; \
+    rm -rf /var/lib/apt/lists/*
+
+RUN set -eu; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        network-manager dnsmasq-base iw \
         libxtst6 libnss3 libnss3-tools auditd \
         libgtk-3-0 libgbm1 libasound2t64 libatspi2.0-0 libatk1.0-0 libatk-bridge2.0-0 \
         libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 \
         libxrandr2 libpango-1.0-0 libcairo2 libx11-6 libx11-xcb1 libxcb1 \
-        libxcb-dri3-0 libxext6 libxss1 libsecret-1-0 libcanberra0 libcanberra-gtk3-0 \
-        fonts-noto-cjk fonts-dejavu-core \
+        libxcb-dri3-0 libxext6 libxss1 libsecret-1-0 libcanberra0 libcanberra-gtk3-0; \
+    rm -rf /var/lib/apt/lists/*
+
+RUN set -eu; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
         nginx-light openssl apache2-utils privoxy microsocks nftables python3; \
     LC_ALL=C.UTF-8 localedef -i zh_CN -f UTF-8 zh_CN.UTF-8; \
     rm -rf /var/lib/apt/lists/*
