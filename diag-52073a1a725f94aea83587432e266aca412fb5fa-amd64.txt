@@ -1,0 +1,58 @@
+arch=amd64 ref=refs/tags/release-v3.2.16-r8362-r3 event=push
+--- docker info ---
+Client: Docker Engine - Community
+ Version:    28.0.4
+ Context:    default
+ Debug Mode: false
+ Plugins:
+  buildx: Docker Buildx (Docker Inc.)
+    Version:  v0.38.1
+    Path:     /usr/libexec/docker/cli-plugins/docker-buildx
+  compose: Docker Compose (Docker Inc.)
+    Version:  v2.38.2
+    Path:     /usr/libexec/docker/cli-plugins/docker-compose
+
+Server:
+ Containers: 0
+  Running: 0
+  Paused: 0
+  Stopped: 0
+ Images: 7
+ Server Version: 28.0.4
+ Storage Driver: overlay2
+--- df ---
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/root       145G   62G   83G  43% /
+tmpfs           7.9G   84K  7.9G   1% /dev/shm
+tmpfs           3.2G 1016K  3.2G   1% /run
+tmpfs           5.0M     0  5.0M   0% /run/lock
+--- login ---
+Login Succeeded
+--- push output ---
+The push refers to repository [ghcr.io/gloryhry/feilian-docker]
+c0c20bf5dbc3: Preparing
+7fc985a9894c: Preparing
+16e205f9bafc: Preparing
+04f2943bc4db: Preparing
+5f70bf18a086: Preparing
+5841fbbedd85: Preparing
+b09f9325404d: Preparing
+a4d4d9df4dbc: Preparing
+eed9b112217e: Preparing
+3e1f35a89d74: Preparing
+c121718ef3de: Preparing
+f4cb21a199fb: Preparing
+dc40ba70ad97: Preparing
+3f8c21ea0b22: Preparing
+a5d6d345f6af: Preparing
+eed9b112217e: Waiting
+dc40ba70ad97: Waiting
+3e1f35a89d74: Waiting
+c121718ef3de: Waiting
+3f8c21ea0b22: Waiting
+a5d6d345f6af: Waiting
+f4cb21a199fb: Waiting
+b09f9325404d: Waiting
+a4d4d9df4dbc: Waiting
+5841fbbedd85: Waiting
+denied: permission_denied: write_package
