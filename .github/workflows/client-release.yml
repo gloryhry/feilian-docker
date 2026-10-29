@@ -22,7 +22,7 @@ on:
         default: "no"
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 concurrency:
@@ -154,6 +154,7 @@ jobs:
 
       - name: Push the platform image
         if: needs.gate.outputs.approved == 'true'
+        id: push
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -161,11 +162,38 @@ jobs:
           src="local/feilian:${GITHUB_SHA}-${{ matrix.arch }}"
           dst="${{ needs.gate.outputs.image }}:${GITHUB_SHA}-${{ matrix.arch }}"
           docker tag "$src" "$dst"
-          if ! docker push "$dst"; then
-            echo "PUSH_FAILED" >&2
-            docker image inspect "$dst" --format 'size={{.Size}}' >&2
-            exit 1
+          if docker push "$dst" > /tmp/push.log 2>&1; then
+            cat /tmp/push.log
+            exit 0
           fi
+          echo "PUSH_FAILED"
+          tail -40 /tmp/push.log
+          {
+            echo "arch=${{ matrix.arch }} ref=$GITHUB_REF event=$GITHUB_EVENT_NAME"
+            echo "--- docker info ---"; docker info 2>&1 | head -20
+            echo "--- df ---"; df -h | head -5
+            echo "--- login ---"; echo "$GHCR_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin 2>&1 | tail -3
+            echo "--- push output ---"; tail -60 /tmp/push.log
+          } > "/tmp/diag-${GITHUB_SHA}-${{ matrix.arch }}.txt"
+          exit 1
+
+      - name: Publish failure diagnostics to a scratch branch
+        if: failure() && steps.push.outcome == 'failure'
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          test -f "/tmp/diag-${GITHUB_SHA}-${{ matrix.arch }}.txt" || exit 0
+          mkdir -p /tmp/diagrepo
+          cd /tmp/diagrepo
+          git init -q
+          git config user.email "ci@users.noreply.github.com"
+          git config user.name "ci-diagnostics"
+          git checkout -q -b ci-diagnostics
+          cp "/tmp/diag-${GITHUB_SHA}-${{ matrix.arch }}.txt" .
+          git add .
+          git commit -q -m "ci diagnostics ${GITHUB_SHA} ${{ matrix.arch }}"
+          git push -q "https://x-access-token:${GHCR_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" ci-diagnostics --force || true
 
   index:
     needs: [gate, build]
