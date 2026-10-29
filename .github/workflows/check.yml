@@ -1,0 +1,54 @@
+name: check
+
+# Pull requests and pushes run only offline checks:
+# no official installer download, no registry login, no secrets, no uploads.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  offline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      # Pinned to a reviewed commit, not a movable major tag.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Verify shell syntax
+        run: |
+          set -eu
+          for script in run.sh stop.sh build.sh scripts/*.sh scripts/lib/*.sh verify/*.sh; do
+            bash -n "$script"
+          done
+
+      - name: Python syntax
+        run: python3 -m compileall -q runtime scripts tests
+
+      - name: Offline unit tests
+        run: |
+          set -eu
+          python3 -m unittest discover -s tests/unit -p 'test_*.py' -v
+
+      - name: Compose contracts (rendered only, no daemon start)
+        run: python3 -m unittest tests.unit.test_compose -v
+
+      - name: Reject committed secrets or vendor installers
+        run: |
+          set -eu
+          if git ls-files | grep -E '\.(deb|rpm)$'; then
+            echo "Committed vendor installer detected" >&2; exit 1
+          fi
+          if git ls-files | grep -E '(^|/)\.env$|\.pem$|\.key$'; then
+            echo "Committed secret material detected" >&2; exit 1
+          fi
+          echo "no vendor installers or secret files tracked"

@@ -1,0 +1,135 @@
+name: client-release
+
+# Manual, approval-gated publication of the official-client image to the PRIVATE
+# package ghcr.io/gloryhry/feilian-docker. This workflow is intentionally NOT
+# attached to push: publishing a proprietary client image requires an explicit
+# redistribution decision, a protected environment and a human approval.
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Type publish to build AND push the private image"
+        required: true
+        default: "no"
+      image:
+        description: "Target image reference (must stay private)"
+        required: true
+        default: "ghcr.io/gloryhry/feilian-docker"
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    environment: private-release
+    outputs:
+      approved: ${{ steps.gate.outputs.approved }}
+    steps:
+      - name: Require explicit redistribution approval
+        id: gate
+        env:
+          APPROVED: ${{ vars.CLIENT_REDISTRIBUTION_APPROVED }}
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          set -eu
+          if [ "$PUBLISH" != "publish" ]; then
+            echo "approved=false" >> "$GITHUB_OUTPUT"
+            echo "publish input not confirmed; build-only path"
+            exit 0
+          fi
+          if [ "${APPROVED:-}" != "true" ]; then
+            echo "CLIENT_REDISTRIBUTION_APPROVED is not true in the protected environment." >&2
+            echo "Set it only after confirming licence/redistribution terms; refusing to publish." >&2
+            exit 1
+          fi
+          echo "approved=true" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: gate
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux/amd64
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            arch: arm64
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Fetch and verify the locked installer
+        # The proprietary package is downloaded here, never cached or uploaded.
+        run: |
+          set -eu
+          python3 scripts/client-artifacts.py validate --arch "${{ matrix.arch }}"
+          python3 scripts/client-artifacts.py fetch --arch "${{ matrix.arch }}"
+
+      - name: Build the exact platform image
+        env:
+          MATRIX_ARCH: ${{ matrix.arch }}
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
+          DOCKER_BUILD_SUMMARY: "false"
+        run: |
+          set -eu
+          ./build.sh --platform "${{ matrix.platform }}" --image "local/feilian:${GITHUB_SHA}-${{ matrix.arch }}"
+          python3 - <<'PY'
+          import json, os, subprocess, sys
+          image = f"local/feilian:{os.environ['GITHUB_SHA']}-{os.environ['MATRIX_ARCH']}"
+          labels = json.loads(subprocess.check_output(
+              ["docker", "image", "inspect", "--format", "{{json .Config.Labels}}", image]))
+          if labels.get("io.feilian.client.kind") != "official":
+              sys.exit("refusing to publish a non-official client image")
+          if labels.get("io.feilian.runtime.schema") != "1":
+              sys.exit("runtime schema mismatch")
+          print("labels verified", sorted(labels))
+          PY
+
+      - name: Login to GHCR
+        if: needs.gate.outputs.approved == 'true'
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Push platform image
+        if: needs.gate.outputs.approved == 'true'
+        run: |
+          set -eu
+          docker tag "local/feilian:${GITHUB_SHA}-${{ matrix.arch }}" \
+            "${{ inputs.image }}:${GITHUB_SHA}-${{ matrix.arch }}"
+          docker push "${{ inputs.image }}:${GITHUB_SHA}-${{ matrix.arch }}"
+
+  index:
+    needs: [gate, build]
+    if: needs.gate.outputs.approved == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Compose the multi-architecture index
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker buildx imagetools create \
+            --tag "${{ inputs.image }}:${GITHUB_SHA}" \
+            --tag "${{ inputs.image }}:v$(date -u +%Y%m%d)-${GITHUB_SHA:0:12}" \
+            "${{ inputs.image }}:${GITHUB_SHA}-amd64" \
+            "${{ inputs.image }}:${GITHUB_SHA}-arm64"
+
+      - name: Record digests, and confirm the package is private
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          docker buildx imagetools inspect "${{ inputs.image }}:${GITHUB_SHA}" | tee "${RUNNER_TEMP}/index.txt"
+          echo "Deploy by digest from the output above; 'latest' is never published implicitly."
+          echo "Package visibility must be private; anonymous pulls are expected to fail."
