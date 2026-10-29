@@ -138,17 +138,34 @@ jobs:
           [ "$ok" = "1" ] || { echo "runtime did not become healthy" >&2; exit 1; }
           echo "runtime healthy; VPN readiness must still be false without an account"
 
+      - name: Diagnose registry auth (no secret values printed)
+        if: needs.gate.outputs.approved == 'true'
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ${{ needs.gate.outputs.image }}
+        run: |
+          set -u
+          echo "actor=${{ github.actor }} image=${IMAGE} token_len=${#GHCR_TOKEN}"
+          echo "repository=$GITHUB_REPOSITORY event=$GITHUB_EVENT_NAME ref=$GITHUB_REF"
+          code=$(curl -s -o /dev/null -w '%{http_code}' -u "${GITHUB_ACTOR}:${GHCR_TOKEN}" \
+            "https://ghcr.io/token?scope=repository%3A${GITHUB_REPOSITORY_OWNER}%2Ffeilian-docker%3Apull%2Cpush&service=ghcr.io")
+          echo "token exchange http=${code}"
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin || echo "LOGIN_FAILED rc=$?"
+
       - name: Push the platform image
         if: needs.gate.outputs.approved == 'true'
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -eu
-          echo "$GHCR_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          set -u
           src="local/feilian:${GITHUB_SHA}-${{ matrix.arch }}"
           dst="${{ needs.gate.outputs.image }}:${GITHUB_SHA}-${{ matrix.arch }}"
           docker tag "$src" "$dst"
-          docker push "$dst"
+          if ! docker push "$dst"; then
+            echo "PUSH_FAILED" >&2
+            docker image inspect "$dst" --format 'size={{.Size}}' >&2
+            exit 1
+          fi
 
   index:
     needs: [gate, build]
