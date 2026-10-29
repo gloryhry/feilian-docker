@@ -18,9 +18,9 @@
 | G2 管理/秘密/生命周期 | IN_PROGRESS | 秘密/网关模块+42测试，运行时编排进行中。 |
 | G3 DNS/状态/就绪 | IN_PROGRESS | 模块+88测试；DNS上游接口绑定已补，未做真实dnsmasq/隧道联调。 |
 | G4 双代理/guard | IN_PROGRESS | 渲染器+单元测试；数据面未在隔离网络实跑。 |
-| G5 网关/MSS/清理 | PENDING | 未实施。 |
-| G6 CI/回滚 | PENDING | 未实施。 |
-| G7 集成/GitHub/GHCR | PENDING | 未实施、未推送、未发布。 |
+| G5 网关/MSS/清理 | IN_PROGRESS | 渲染器已实现；真实 SNAT/MSS 包级验收未做。 |
+| G6 CI/回滚 | IN_PROGRESS | check/client-release 工作流已落并通过 YAML 校验；未在远端运行。 |
+| G7 集成/GitHub/GHCR | BLOCKED (GHCR) | 分支已推送；GHCR 无凭据，发布未执行。 |
 
 ## 执行记录
 
@@ -39,7 +39,10 @@
 - 真实 production 镜像构建成功：`docker buildx build --target production --platform linux/amd64 --load --build-context client_dist=dist/3.2.16`（镜像 `feilian-official:3.2.16-dev`，672,543,394 字节）。镜像内构建阶段打印 `/tmp/feilian-dist/amd64/client.deb: OK`，即 SHA256 与 DEB 头二次校验通过后才解包。容器内实测 `corplink`/`corplink-service` 存在，`ldd` 未发现缺失共享库（0/0），labels 含 `io.feilian.client.kind=official`、`runtime.schema=1`。
 - 运行时编排真实冒烟（mock 镜像 `feilian-mock:smoke1`，--network none，按 Compose 显式能力清单）：system dbus 就绪；supervisor 托管 service/controller/dnsmasq/x11vnc/nginx；`supervisor.py health` 退出 0；`vpn_state.py status` 返回 `state=UNCONFIGURED, ready=false, reason=corporate_probe_not_configured`；dnsmasq 仅监听 127.0.0.1:53，x11vnc 127.0.0.1:5900，mock 服务 31055/31056；`docker stop -t 25` 正常排空退出。数据面保持 closed，未伪造 READY。
 - 期间发现并修复：`--cap-drop ALL` 会让 dbus-daemon 无法降权而启动失败（`Failed to drop capabilities`），必须使用 Compose 中的显式能力清单；entrypoint 已按此运行。
-- 尚未执行：管理网关鉴权+TLS 端到端（未生成秘密卷）、官方客户端真实登录/隧道、L2 包级防泄漏验收、ARM64 运行、GitHub 推送与私有 GHCR 发布。
+- G7 进展：功能分支 `feat/corplink-inspired-runtime` 已推送到 `github.com/gloryhry/feilian-docker`（`ls-remote` 显示 `36e58b1...`，随后追加 CI 提交 `03699e8`）。`git push --dry-run` 预检与实际推送均成功，未强推、未合并 main。
+- G6 进展：`.github/workflows/check.yml`（PR/push 仅离线：语法、单元、Compose 渲染、禁止提交安装包/秘密）与 `client-release.yml`（仅 workflow_dispatch、`private-release` 受保护环境、`vars.CLIENT_REDISTRIBUTION_APPROVED=true` 门禁、amd64+arm64 原生 runner、拒绝非 official 标签镜像）已落盘，并用真实 YAML 解析器校验通过；尚未在远端实际运行。
+- **GHCR 发布门禁（未完成）**：本机没有 `~/.docker/config.json`、无 `GH_TOKEN`/`GITHUB_TOKEN`/`CR_PAT`、无 gh CLI 配置；`ghcr.io` 匿名 token 端点返回 403、匿名 manifest 返回 401。私有镜像未推送，也没有伪造任何“已发布”结论。需要 YG 提供 GHCR 登录（或 GitHub Actions 凭据 + 设置受保护环境与再分发批准变量）。
+- 尚未执行：管理网关鉴权+TLS 端到端（未生成秘密卷）、官方客户端真实登录/隧道、L2 包级防泄漏验收、ARM64 原生运行。
 - Git 作者身份已配置；非交互 git push --dry-run 预检 exit 0，远端可接受目标功能分支。未实际推送。GitHub CLI 不存在，不因此安装系统工具。
 - 旧 README 实测不自动当作新代码验收证据。
 
