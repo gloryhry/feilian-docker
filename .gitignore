@@ -1,4 +1,15 @@
-dist/*.deb
-artifacts/
+# Proprietary installers, runtime state, secrets and build output never enter git.
+/dist/
+/artifacts/
+/.state/
+/.secrets/
 .env
+.env.*
+!.env.example
 *.log
+*.part
+*.oci.tar
+*.key
+*.pem
+__pycache__/
+*.py[cod]

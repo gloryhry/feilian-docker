@@ -1,44 +1,36 @@
 #!/usr/bin/env bash
-# 把宿主机网卡（有线或无线）以 L2 方式映射进容器：macvlan。
-# 注意：
-#   - 无线 STA 网卡（wlan0）绝大多数驱动/AP 不支持 macvlan（4-address 模式被禁，AP 还会按 MAC 过滤）
-#   - 云主机上常有 anti-spoofing，macvlan 的额外 MAC 会被上游丢弃
-#   - 容器与宿主机互 ping 不通是 macvlan 的正常行为（要通需在宿主机加 shim 接口）
+# Explicit, owner-checked macvlan preparation. No guessing, replacement or shim by default.
 set -Eeuo pipefail
-
-PARENT=${PARENT:-$(ip route show default | awk '/default/{print $5; exit}')}
-SUBNET=${SUBNET:-}
-GATEWAY=${GATEWAY:-}
-IP=${IP:-}
-
-usage() {
-  cat <<EOF
-用法:
-  bash scripts/net-macvlan.sh create [parent=enp1s0] [subnet=192.168.0.0/20] [gateway=192.168.0.1]
-  bash scripts/net-macvlan.sh destroy
-参数可用环境变量 PARENT / SUBNET / GATEWAY / IP 覆盖
-EOF
-}
-
-case "${1:-}" in
-  create)
-    [ -n "$PARENT" ] || { echo "无法确定物理网卡，请用 PARENT=wlan0 指定"; exit 1; }
-    if [ -z "$SUBNET" ]; then
-      SUBNET=$(ip -4 -o addr show dev "$PARENT" | awk '{print $4}' | head -n1)
-      echo "==> 从 $PARENT 推断子网: $SUBNET"
-    fi
-    [ -n "$GATEWAY" ] || GATEWAY=$(ip route show default | awk '/default/{print $3; exit}')
-    docker network rm feilian-macvlan >/dev/null 2>&1 || true
-    docker network create -d macvlan \
-      --subnet "$SUBNET" --gateway "$GATEWAY" \
-      -o parent="$PARENT" \
-      feilian-macvlan
-    echo "==> 已创建 macvlan 网络 feilian-macvlan（parent=$PARENT）"
-    echo "    compose.macvlan.yaml 里把 ipv4_address 设成同网段的空闲 IP"
-    ;;
-  destroy)
-    docker network rm feilian-macvlan 2>/dev/null || true
-    echo "==> 已删除"
-    ;;
-  *) usage; exit 1;;
+SCRIPT_ROOT="$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")"
+source "$SCRIPT_ROOT/lib/config.sh"
+action="${1:-help}"
+(( $# == 0 )) || shift
+case "$action" in
+  create) operation=macvlan-create ;;
+  plan) operation=macvlan-create ;;
+  destroy) operation=macvlan-destroy ;;
+  help|--help|-h)
+    printf '%s\n' 'Usage: scripts/net-macvlan.sh create|plan|destroy [--config FILE] [--set KEY=VALUE] [--dry-run]' \
+      'Set MACVLAN_PARENT, MACVLAN_SUBNET, MACVLAN_GATEWAY, MACVLAN_IP explicitly.' \
+      'plan is read-only; destroy removes only the recorded, unused owned macvlan.'
+    exit 0 ;;
+  *) printf 'Unknown macvlan action: %s\n' "$action" >&2; exit 2 ;;
 esac
+config_args=()
+extra=()
+[[ "$action" != plan ]] || extra+=(--dry-run)
+while (( $# )); do
+  case "$1" in
+    --config|--set)
+      [[ $# -ge 2 ]] || { printf 'Missing configuration value\n' >&2; exit 2; }
+      config_args+=("$1" "$2"); shift 2 ;;
+    --dry-run) extra+=(--dry-run); shift ;;
+    *) printf 'Unknown option: %s\n' "$1" >&2; exit 2 ;;
+  esac
+done
+feilian_load_config "${config_args[@]}"
+args=(--project "$PROJECT_NAME")
+if [[ "$operation" == macvlan-create ]]; then
+  args+=(--parent "$MACVLAN_PARENT" --subnet "$MACVLAN_SUBNET" --gateway "$MACVLAN_GATEWAY" --ip "$MACVLAN_IP")
+fi
+exec python3 "$FEILIAN_ROOT/scripts/network-resources.py" "$operation" "${args[@]}" "${extra[@]}"

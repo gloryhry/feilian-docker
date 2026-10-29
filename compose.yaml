@@ -1,55 +1,74 @@
-name: feilian
+name: ${PROJECT_NAME:-feilian}
 
-# 默认网络：Docker bridge + NAT。容器通过宿主机现有网络（笔记本上就是 WiFi）出网。
-# 本机若有多层透明代理/防火墙导致 bridge 出网不可用，run.sh 会自动切到 compose.host.yaml。
+# Main mode. run.sh prepares and verifies the owned external bridge first.
 services:
   feilian:
-    image: ${TAG:-feilian-gui:3.2.16}
-    build:
-      context: .
-      network: host
-      args:
-        DEBIAN_MIRROR: ${DEBIAN_MIRROR:-}
-    container_name: feilian
+    image: ${IMAGE_REF:?Use run.sh or load the validated configuration first}
     hostname: feilian
     init: true
     restart: unless-stopped
-    stop_grace_period: 15s
+    stop_grace_period: ${STOP_TIMEOUT:-20}s
     shm_size: 256m
-
-    # 飞连需要建 tun、改路由；只需要这两个 capability，绝不给 SYS_ADMIN / privileged
+    labels:
+      io.feilian.project: ${PROJECT_NAME:-feilian}
+    # Explicit compatibility budget, initially Docker defaults + NET_ADMIN.
+    # G2 narrows this against real-client smoke; cap_add is not a full cap list.
+    cap_drop: [ALL]
     cap_add:
-      - NET_ADMIN
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - FSETID
+      - KILL
+      - SETGID
+      - SETUID
+      - SETPCAP
+      - NET_BIND_SERVICE
       - NET_RAW
+      - SYS_CHROOT
+      - MKNOD
+      - AUDIT_WRITE
+      - SETFCAP
+      - NET_ADMIN
     devices:
       - /dev/net/tun:/dev/net/tun
-
     ports:
-      # 只绑宿主机回环：从外部网络无法访问这个窗口
-      - "127.0.0.1:${NOVNC_PORT:-6080}:6080"
-
+      - target: ${NOVNC_INTERNAL_PORT:-6080}
+        published: "${NOVNC_HOST_PORT:-6080}"
+        host_ip: ${WEB_BIND:-127.0.0.1}
+        protocol: tcp
     environment:
+      FEILIAN_NETWORK_MODE: bridge
       GUI_MODE: ${GUI_MODE:-vnc}
       VNC_GEOMETRY: ${VNC_GEOMETRY:-1600x1000x24}
-      VNC_PASSWORD: ${VNC_PASSWORD:-}
+      VNC_PASSWORD_FILE: ${VNC_PASSWORD_FILE:-}
       NOVNC_BIND: 0.0.0.0
-      NOVNC_PORT: 6080
+      NOVNC_PORT: ${NOVNC_INTERNAL_PORT:-6080}
+      NOVNC_INTERNAL_PORT: ${NOVNC_INTERNAL_PORT:-6080}
+      WEB_AUTH: ${WEB_AUTH:-1}
+      WEB_TLS: ${WEB_TLS:-off}
+      WEB_SOURCE_CIDRS: ${WEB_SOURCE_CIDRS:-}
+      WEB_AUTH_FILE: ${WEB_AUTH_FILE:-}
+      WEB_TLS_CERT_FILE: ${WEB_TLS_CERT_FILE:-}
+      WEB_TLS_KEY_FILE: ${WEB_TLS_KEY_FILE:-}
       START_NETWORKMANAGER: ${START_NETWORKMANAGER:-1}
       START_SERVICE: ${START_SERVICE:-1}
       START_GUI: ${START_GUI:-1}
-
     volumes:
-      # 全部是 docker 命名卷 => 不是宿主机目录，容器看不到宿主机任何文件
       - feilian-home:/home/feilian
       - feilian-root:/root
       - feilian-logs:/var/log/feilian
-
     security_opt:
       - no-new-privileges:true
     ulimits:
       nofile:
         soft: 65536
         hard: 65536
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - feilian-net
 
@@ -60,4 +79,5 @@ volumes:
 
 networks:
   feilian-net:
-    driver: bridge
+    external: true
+    name: ${PROJECT_NAME:-feilian}-net

@@ -1,9 +1,20 @@
-# 构建上下文：只需要安装包 + 脚本
-dist/
-!dist/FeiLian_Linux_amd64_*.deb
-artifacts/
-verify/
-*.md
-!README.md
-.git/
-.env
+# Minimize the production context; installers use an explicit named context.
+**
+!Dockerfile
+!scripts/
+!scripts/**
+!config/
+!config/client.lock.json
+!runtime/
+!runtime/**
+# Defense in depth even inside a source directory.
+**/__pycache__/
+**/*.py[cod]
+**/*.key
+**/*.pem
+**/*.part
+**/.env
+**/.env.*
+**/.state/
+**/.secrets/
+# Tests are supplied through a separate context/stage, never with runtime state.

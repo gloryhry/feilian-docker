@@ -1,51 +1,73 @@
-name: feilian
+name: ${PROJECT_NAME:-feilian}
 
-# 宿主网络模式：容器直接使用宿主机网络栈（包括 WiFi / 代理 / VPN 路径）。
-# 适用场景：宿主机上的透明代理、防火墙把 docker bridge 出网打断时（本机就是这种）。
-#
-# 代价（务必知悉）：
-#   1) 飞连建的 tun / 路由落在宿主机 netns 上，连上 VPN 会影响宿主机流量；
-#   2) 容器能访问宿主机回环上的服务（文件仍然隔离）。
-# 不用时 docker compose -f compose.host.yaml down 即可，路由随 tun 一起消失。
+# Explicit compatibility mode only. This is NOT network isolation.
+# Official FeiLian itself can alter the host netns; stopping need not undo it all.
+# Managed proxy/DNS/gateway/MSS/guard are rejected by the configuration validator.
 services:
   feilian:
-    image: ${TAG:-feilian-gui:3.2.16}
-    container_name: feilian
+    image: ${IMAGE_REF:?Use run.sh or load the validated configuration first}
     hostname: feilian
     init: true
     restart: unless-stopped
-    stop_grace_period: 15s
+    stop_grace_period: ${STOP_TIMEOUT:-20}s
     shm_size: 256m
     network_mode: host
-
+    labels:
+      io.feilian.project: ${PROJECT_NAME:-feilian}
+    cap_drop: [ALL]
     cap_add:
-      - NET_ADMIN
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - FSETID
+      - KILL
+      - SETGID
+      - SETUID
+      - SETPCAP
+      - NET_BIND_SERVICE
       - NET_RAW
+      - SYS_CHROOT
+      - MKNOD
+      - AUDIT_WRITE
+      - SETFCAP
+      - NET_ADMIN
     devices:
       - /dev/net/tun:/dev/net/tun
-
     environment:
+      FEILIAN_NETWORK_MODE: host
       GUI_MODE: ${GUI_MODE:-vnc}
       VNC_GEOMETRY: ${VNC_GEOMETRY:-1600x1000x24}
-      VNC_PASSWORD: ${VNC_PASSWORD:-}
-      # host 网络下必须只监听回环，否则窗口直接暴露在 0.0.0.0:6080
+      VNC_PASSWORD_FILE: ${VNC_PASSWORD_FILE:-}
       NOVNC_BIND: 127.0.0.1
-      NOVNC_PORT: 6080
+      NOVNC_PORT: ${NOVNC_HOST_PORT:-6080}
+      NOVNC_INTERNAL_PORT: ${NOVNC_HOST_PORT:-6080}
+      WEB_AUTH: ${WEB_AUTH:-1}
+      WEB_TLS: ${WEB_TLS:-off}
+      WEB_AUTH_FILE: ${WEB_AUTH_FILE:-}
+      WEB_TLS_CERT_FILE: ${WEB_TLS_CERT_FILE:-}
+      WEB_TLS_KEY_FILE: ${WEB_TLS_KEY_FILE:-}
+      PROXY_ENABLED: "0"
+      DNS_MODE: "off"
+      GUARD_ENABLED: "0"
+      GATEWAY_ENABLED: "0"
       START_NETWORKMANAGER: ${START_NETWORKMANAGER:-0}
       START_SERVICE: ${START_SERVICE:-1}
       START_GUI: ${START_GUI:-1}
-
     volumes:
       - feilian-home:/home/feilian
       - feilian-root:/root
       - feilian-logs:/var/log/feilian
-
     security_opt:
       - no-new-privileges:true
     ulimits:
       nofile:
         soft: 65536
         hard: 65536
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   feilian-home:
