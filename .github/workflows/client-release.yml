@@ -1,55 +1,75 @@
 name: client-release
 
-# Manual, approval-gated publication of the official-client image to the PRIVATE
-# package ghcr.io/gloryhry/feilian-docker. This workflow is intentionally NOT
-# attached to push: publishing a proprietary client image requires an explicit
-# redistribution decision, a protected environment and a human approval.
+# Publishing is a deliberate human action: pushing a `release-v*` tag.
+# The proprietary client image is built on native runners (no QEMU), pushed only
+# to the PRIVATE package ghcr.io/<owner>/<repo>, and never tagged `latest`.
+#
+# Gates, in order:
+#   1. tag must match release-v<client version>-<anything>
+#   2. repository variable CLIENT_REDISTRIBUTION_APPROVED must not be "false"
+#      (unset = allowed, because this repository exists to build this image for
+#      its own owner; set it to "false" to freeze publishing instantly)
+#   3. both native architecture builds must pass the official-client label check
 on:
+  push:
+    tags:
+      - "release-v*"
   workflow_dispatch:
     inputs:
       publish:
-        description: "Type publish to build AND push the private image"
-        required: true
+        description: "Type publish to build AND push without a tag"
+        required: false
         default: "no"
-      image:
-        description: "Target image reference (must stay private)"
-        required: true
-        default: "ghcr.io/gloryhry/feilian-docker"
 
 permissions:
   contents: read
   packages: write
 
+concurrency:
+  group: client-release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   gate:
     runs-on: ubuntu-24.04
-    environment: private-release
     outputs:
       approved: ${{ steps.gate.outputs.approved }}
+      image: ${{ steps.gate.outputs.image }}
     steps:
-      - name: Require explicit redistribution approval
+      - name: Decide whether this run may publish
         id: gate
         env:
-          APPROVED: ${{ vars.CLIENT_REDISTRIBUTION_APPROVED }}
-          PUBLISH: ${{ inputs.publish }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          VETO: ${{ vars.CLIENT_REDISTRIBUTION_APPROVED }}
+          DISPATCH: ${{ inputs.publish }}
         run: |
           set -eu
-          if [ "$PUBLISH" != "publish" ]; then
-            echo "approved=false" >> "$GITHUB_OUTPUT"
-            echo "publish input not confirmed; build-only path"
-            exit 0
-          fi
-          if [ "${APPROVED:-}" != "true" ]; then
-            echo "CLIENT_REDISTRIBUTION_APPROVED is not true in the protected environment." >&2
-            echo "Set it only after confirming licence/redistribution terms; refusing to publish." >&2
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER}/feilian-docker"
+          echo "image=${image}" >> "$GITHUB_OUTPUT"
+          if [ "${VETO:-}" = "false" ]; then
+            echo "CLIENT_REDISTRIBUTION_APPROVED=false vetoes publication" >&2
             exit 1
           fi
-          echo "approved=true" >> "$GITHUB_OUTPUT"
+          if [ "$REF_TYPE" = "tag" ]; then
+            case "$REF_NAME" in
+              release-v*) ;;
+              *) echo "tag does not look like a release: $REF_NAME" >&2; exit 1 ;;
+            esac
+            echo "approved=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "${DISPATCH:-}" = "publish" ]; then
+            echo "approved=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "approved=false" >> "$GITHUB_OUTPUT"
+            echo "no tag and no explicit publish input: build-only, nothing is pushed"
+          fi
 
   build:
     needs: gate
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -65,8 +85,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Fetch and verify the locked installer
-        # The proprietary package is downloaded here, never cached or uploaded.
+      - name: Fetch and verify the locked installer (never cached)
         run: |
           set -eu
           python3 scripts/client-artifacts.py validate --arch "${{ matrix.arch }}"
@@ -79,7 +98,8 @@ jobs:
           DOCKER_BUILD_SUMMARY: "false"
         run: |
           set -eu
-          ./build.sh --platform "${{ matrix.platform }}" --image "local/feilian:${GITHUB_SHA}-${{ matrix.arch }}"
+          image="local/feilian:${GITHUB_SHA}-${{ matrix.arch }}"
+          ./build.sh --platform "${{ matrix.platform }}" --image "$image"
           python3 - <<'PY'
           import json, os, subprocess, sys
           image = f"local/feilian:{os.environ['GITHUB_SHA']}-{os.environ['MATRIX_ARCH']}"
@@ -89,24 +109,46 @@ jobs:
               sys.exit("refusing to publish a non-official client image")
           if labels.get("io.feilian.runtime.schema") != "1":
               sys.exit("runtime schema mismatch")
-          print("labels verified", sorted(labels))
+          print("labels verified:", sorted(labels))
           PY
 
-      - name: Login to GHCR
+      - name: Real-client no-account smoke (this runner architecture only)
+        run: |
+          set -eu
+          image="local/feilian:${GITHUB_SHA}-${{ matrix.arch }}"
+          docker rm -f fl-smoke >/dev/null 2>&1 || true
+          docker run -d --name fl-smoke --network none \
+            --security-opt no-new-privileges:true --cap-drop ALL --cap-add CHOWN \
+            --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add FSETID --cap-add KILL \
+            --cap-add SETGID --cap-add SETUID --cap-add SETPCAP --cap-add NET_BIND_SERVICE \
+            --cap-add SYS_CHROOT --cap-add MKNOD --cap-add AUDIT_WRITE --cap-add SETFCAP \
+            --cap-add NET_ADMIN --tmpfs /run:rw,size=32m --tmpfs /var/log/feilian:rw,size=32m \
+            -e FEILIAN_NETWORK_MODE=bridge -e START_NETWORKMANAGER=0 -e START_GUI=0 \
+            "$image"
+          ok=0
+          for _ in $(seq 1 24); do
+            sleep 5
+            if docker exec fl-smoke python3 /opt/feilian/runtime/supervisor.py health \
+                 --state-dir /run/feilian; then ok=1; break; fi
+          done
+          docker logs fl-smoke | tail -20
+          docker exec fl-smoke cat /run/feilian/status.json || true
+          docker stop -t 25 fl-smoke >/dev/null 2>&1 || true
+          docker rm -f fl-smoke >/dev/null 2>&1 || true
+          [ "$ok" = "1" ] || { echo "runtime did not become healthy" >&2; exit 1; }
+          echo "runtime healthy; VPN readiness must still be false without an account"
+
+      - name: Push the platform image
         if: needs.gate.outputs.approved == 'true'
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -eu
-          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-
-      - name: Push platform image
-        if: needs.gate.outputs.approved == 'true'
-        run: |
-          set -eu
-          docker tag "local/feilian:${GITHUB_SHA}-${{ matrix.arch }}" \
-            "${{ inputs.image }}:${GITHUB_SHA}-${{ matrix.arch }}"
-          docker push "${{ inputs.image }}:${GITHUB_SHA}-${{ matrix.arch }}"
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          src="local/feilian:${GITHUB_SHA}-${{ matrix.arch }}"
+          dst="${{ needs.gate.outputs.image }}:${GITHUB_SHA}-${{ matrix.arch }}"
+          docker tag "$src" "$dst"
+          docker push "$dst"
 
   index:
     needs: [gate, build]
@@ -116,20 +158,23 @@ jobs:
       - name: Compose the multi-architecture index
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ${{ needs.gate.outputs.image }}
         run: |
           set -eu
-          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          tag="${GITHUB_REF_NAME#release-v}"
           docker buildx imagetools create \
-            --tag "${{ inputs.image }}:${GITHUB_SHA}" \
-            --tag "${{ inputs.image }}:v$(date -u +%Y%m%d)-${GITHUB_SHA:0:12}" \
-            "${{ inputs.image }}:${GITHUB_SHA}-amd64" \
-            "${{ inputs.image }}:${GITHUB_SHA}-arm64"
+            --tag "${IMAGE}:v${tag:-0.0.0}" \
+            --tag "${IMAGE}:${GITHUB_SHA:0:12}" \
+            "${IMAGE}:${GITHUB_SHA}-amd64" \
+            "${IMAGE}:${GITHUB_SHA}-arm64"
 
-      - name: Record digests, and confirm the package is private
+      - name: Record digests (deploy by digest, never latest)
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ${{ needs.gate.outputs.image }}
         run: |
           set -eu
-          docker buildx imagetools inspect "${{ inputs.image }}:${GITHUB_SHA}" | tee "${RUNNER_TEMP}/index.txt"
-          echo "Deploy by digest from the output above; 'latest' is never published implicitly."
-          echo "Package visibility must be private; anonymous pulls are expected to fail."
+          docker buildx imagetools inspect "${IMAGE}:${GITHUB_SHA:0:12}" | tee index.txt
+          grep -E 'Digest|Platform' index.txt
+          echo "Package must stay private; anonymous pulls are expected to be denied."

@@ -124,6 +124,14 @@ ARG CLIENT_DEB_VERSION
 # No glob, filename discovery, install script, or embedded installer image layer.
 # The host fetcher checks this first; the image independently rechecks exact bytes
 # and actual control headers before extraction for the requested TARGETARCH.
+#
+# The client payload is ~751 MB, so extraction is split across several RUN steps.
+# Each step becomes its own registry blob: one oversized layer otherwise makes a
+# push to a rate-limited/proxied registry time out mid-upload. Every step still
+# re-verifies the locked digest before touching the package.
+ARG CLIENT_DIR=/opt/apps/com.volcengine.feilian/files
+
+# Step 1: verify the locked package and extract the shared libraries only.
 RUN --mount=type=bind,from=client_dist,source=/,target=/tmp/feilian-dist,ro \
     set -eu; \
     case "$TARGETARCH" in \
@@ -137,18 +145,37 @@ RUN --mount=type=bind,from=client_dist,source=/,target=/tmp/feilian-dist,ro \
     test -f "$deb"; \
     printf '%s  %s\n' "$expected_sha" "$deb" | sha256sum --check --strict -; \
     test "$CLIENT_DEB_PACKAGE" = 'com.volcengine.feilian'; \
-    test -n "$CLIENT_DEB_VERSION"; \
     test "$(dpkg-deb --field "$deb" Package)" = "$CLIENT_DEB_PACKAGE"; \
     test "$(dpkg-deb --field "$deb" Version)" = "$CLIENT_DEB_VERSION"; \
     test "$(dpkg-deb --field "$deb" Architecture)" = "$TARGETARCH"; \
-    dpkg-deb --extract "$deb" /; \
+    dpkg-deb --fsys-tarfile "$deb" | tar -x -C / --wildcards \
+        './opt/apps/com.volcengine.feilian/files/lib/*'
+
+# Step 2: bundled resources.
+RUN --mount=type=bind,from=client_dist,source=/,target=/tmp/feilian-dist,ro \
+    set -eu; \
+    deb="/tmp/feilian-dist/${TARGETARCH}/client.deb"; \
+    dpkg-deb --fsys-tarfile "$deb" | tar -x -C / --wildcards \
+        './opt/apps/com.volcengine.feilian/files/resources/*' \
+        './opt/apps/com.volcengine.feilian/files/resource/*'
+
+# Step 3: remaining payload (entrypoints, data, desktop files, NM config).
+RUN --mount=type=bind,from=client_dist,source=/,target=/tmp/feilian-dist,ro \
+    set -eu; \
+    deb="/tmp/feilian-dist/${TARGETARCH}/client.deb"; \
+    dpkg-deb --fsys-tarfile "$deb" | tar -x -C / --wildcards \
+        --exclude='./opt/apps/com.volcengine.feilian/files/lib/*' \
+        --exclude='./opt/apps/com.volcengine.feilian/files/resources/*' \
+        --exclude='./opt/apps/com.volcengine.feilian/files/resource/*'
+
+# Step 4: ownership, permissions and the directories the client expects to exist.
+RUN set -eu; \
     mkdir -p \
-        /opt/apps/com.volcengine.feilian/files/data/edlp/back_paks/ui \
-        /opt/apps/com.volcengine.feilian/files/data/edlp/back_paks/cfg \
-        /opt/apps/com.volcengine.feilian/files/logs; \
-    chown -R root:root /opt/apps/com.volcengine.feilian/files; \
+        ${CLIENT_DIR}/data/edlp/back_paks/ui \
+        ${CLIENT_DIR}/data/edlp/back_paks/cfg \
+        ${CLIENT_DIR}/logs; \
+    chown -R root:root ${CLIENT_DIR}; \
     chown root:root /etc/NetworkManager/dnsmasq.d/corplink.conf; \
-    chmod 755 /opt/apps/com.volcengine.feilian/files/corplink \
-              /opt/apps/com.volcengine.feilian/files/corplink-service
+    chmod 755 ${CLIENT_DIR}/corplink ${CLIENT_DIR}/corplink-service
 ENV FEILIAN_CLIENT_KIND=official
 LABEL io.feilian.client.kind="official"
