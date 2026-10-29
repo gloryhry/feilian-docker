@@ -1,0 +1,6 @@
+#!/bin/sh
+# No proprietary client or VPN implementation is included in this fixture.
+# Deliberately ignore Electron's flags supplied by the production launcher.
+exec xmessage -center -title 'FeiLian MOCK - no VPN' 'MOCK CLIENT ONLY
+This image contains no official client and no enterprise VPN.
+Use only for isolated runtime and failure-path tests.'

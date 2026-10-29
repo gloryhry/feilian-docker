@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "release": {
+    "version": "3.2.16",
+    "revision": "r8362"
+  },
+  "base_image": "debian:trixie-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4",
+  "artifacts": {
+    "amd64": {
+      "filename": "FeiLian_Linux_amd64_v3.2.16_r8362_0d182a.deb",
+      "url": "https://cdn.isealsuite.com/linux/FeiLian_Linux_amd64_v3.2.16_r8362_0d182a.deb",
+      "sha256": "0ecaf5a41960a35679d1a715b73dadab1703b65decf13dbd689f8e1cc946a9d3",
+      "deb_package": "com.volcengine.feilian",
+      "deb_version": "3.2.16",
+      "deb_architecture": "amd64",
+      "verification": {
+        "method": "maintainer-reviewed-tls",
+        "reference": "https://cdn.isealsuite.com/linux/FeiLian_Linux_amd64_v3.2.16_r8362_0d182a.deb",
+        "approved": true
+      }
+    },
+    "arm64": {
+      "filename": "FeiLian_Linux_arm64_v3.2.16_r8362_038591.deb",
+      "url": "https://cdn.isealsuite.com/linux/FeiLian_Linux_arm64_v3.2.16_r8362_038591.deb",
+      "sha256": "0547fd7a288e397346d413f60d77d16ba61731b361c53c8fa5e40ae29d42c99a",
+      "deb_package": "com.volcengine.feilian",
+      "deb_version": "3.2.16",
+      "deb_architecture": "arm64",
+      "verification": {
+        "method": "maintainer-reviewed-tls",
+        "reference": "https://cdn.isealsuite.com/linux/FeiLian_Linux_arm64_v3.2.16_r8362_038591.deb",
+        "approved": true
+      }
+    }
+  }
+}
