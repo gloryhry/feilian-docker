@@ -18,6 +18,7 @@ import os
 from pathlib import Path
 import re
 import socket
+import subprocess
 import time
 
 OWNER = "io.feilian.test.owner"
@@ -96,6 +97,31 @@ except Exception as exc:
 """
 
 
+
+GATEWAY_PROBE = r"""
+import base64, json, socket, ssl, pathlib
+cred = json.loads(pathlib.Path('/run/feilian-secrets/access.json').read_text())
+token = base64.b64encode(('%s:%s' % (cred['username'], cred['web_password'])).encode()).decode()
+ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
+def head(headers, path='/vnc.html', extra=None):
+    s = socket.create_connection(('127.0.0.1', 6080), timeout=6)
+    w = ctx.wrap_socket(s, server_hostname='localhost')
+    lines = ['GET %s HTTP/1.1' % path, 'Host: localhost', 'Connection: close'] + (extra or [])
+    lines += ['%s: %s' % kv for kv in headers.items()]
+    w.sendall(('\r\n'.join(lines) + '\r\n\r\n').encode())
+    data = w.recv(120).decode('latin-1'); w.close()
+    return data.split('\r\n')[0]
+out = {}
+out['anonymous'] = head({})
+out['authenticated'] = head({'Authorization': 'Basic ' + token})
+key = base64.b64encode(b'0' * 16).decode()
+out['websocket'] = head({'Authorization': 'Basic ' + token}, '/websockify',
+                        ['Upgrade: websocket', 'Connection: Upgrade',
+                         'Sec-WebSocket-Key: ' + key, 'Sec-WebSocket-Version: 13'])
+print(json.dumps(out))
+"""
+
+
 class Lab:
     def __init__(self, driver, args):
         self.driver, self.args = driver, args
@@ -164,8 +190,10 @@ class Lab:
     def setup_networks(self):
         for kind in ("bootstrap-net", "access-net"):
             self.add("network", self.names[kind], "--internal", "--driver", "bridge")
-        for kind in ("data", "secrets", "home", "root", "logs"):
+        for kind in ("data", "home", "root", "logs"):
             self.add("volume", self.names[kind])
+        # "secrets" is created by scripts/secrets-cli.py itself; it refuses to adopt
+        # a volume somebody else created, so the harness must not pre-create it.
 
     def service(self, role, capabilities):
         arguments = ["--network", self.names["bootstrap-net"], "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
@@ -428,9 +456,52 @@ class Lab:
         except Exception as exc:
             report.add("dns.full_mode", "FAIL", "full_mode_probe_failed_" + type(exc).__name__.lower())
 
+        # Management gateway end to end: secrets volume, TLS, Basic auth, WebSocket.
+        try:
+            import shutil as _shutil
+            _shutil.rmtree(self.driver.root / ".state" / self.owner, ignore_errors=True)
+            # Docker auto-creates a named volume when a container references it, and the
+            # secrets CLI refuses to adopt a volume it did not create. Drop the app
+            # container first, then the empty volume, then let the CLI own it.
+            self.driver.docker("rm", "--force", self.names["app"], check=False)
+            self.driver.docker("volume", "rm", "--force", self.owner + "-secrets", check=False)
+            secret = subprocess.run(
+                ["python3", str(self.driver.root / "scripts" / "secrets-cli.py"), "ensure",
+                 "--set", "PROJECT_NAME=" + self.owner, "--set", "IMAGE_REF=" + self.image,
+                 "--set", "WEB_TLS=selfsigned"],
+                capture_output=True, text=True, timeout=300, check=False)
+            if secret.returncode:
+                detail = re.sub(r"[^a-z0-9]+", "_", (secret.stderr or "unknown").lower()).strip("_")
+                raise LabError("secrets_cli_failed_" + detail[:90])
+            self.driver.docker("rm", "--force", self.names["app"], check=False)
+            self.app("mock", {"WEB_AUTH": "1", "WEB_TLS": "selfsigned"})
+            listening = False
+            for _ in range(80):
+                probe = self.driver.docker("exec", self.names["app"], "ss", "-ltn", check=False)
+                if b":6080" in (probe.stdout or b""):
+                    listening = True
+                    break
+                time.sleep(0.5)
+            result = self.driver.docker("exec", self.names["app"], "python3", "-c",
+                                        GATEWAY_PROBE, check=False)
+            raw = (result.stdout or b"").decode("utf-8", "replace").strip()
+            payload = json.loads(raw) if raw.startswith("{") else {}
+            anonymous = "401" in payload.get("anonymous", "")
+            authenticated = "200" in payload.get("authenticated", "")
+            websocket = "101" in payload.get("websocket", "")
+            ok = listening and anonymous and authenticated and websocket
+            report.add("auth.tls_wss", "PASS" if ok else "FAIL",
+                       "anonymous_401_authenticated_200_websocket_101" if ok else
+                       ("listening=%s " % listening) + raw[:160])
+            self.driver.docker("volume", "rm", "--force", self.owner + "-secrets", check=False)
+        except Exception as exc:
+            reason = str(exc)
+            code = reason if re.fullmatch(r"[a-z0-9_:.-]+", reason) else "gateway_probe_failed_" + type(exc).__name__.lower()
+            report.add("auth.tls_wss", "FAIL", code[:120])
+
         # Explicitly unfinished acceptance gates: do not let a partial test lab
         # turn these into successful or optional checks.
-        for name in ("gateway.snat", "gateway.syn_mss", "auth.tls_wss", "fault.old_tcp"):
+        for name in ("gateway.snat", "gateway.syn_mss", "fault.old_tcp"):
             report.add(name, "FAIL", "NOT_IMPLEMENTED")
 
 

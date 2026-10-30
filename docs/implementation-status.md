@@ -159,7 +159,9 @@
   1. 直接在容器内跑 `secrets_volume.py ensure` 生成秘密 → 网关拒绝启动（`secrets volume incomplete`）：helper 直调生成的 `web.htpasswd` 组属主不是 `www-data`，与 `web_gateway.py` 的严格校验不符。
   2. 改用宿主侧 `scripts/secrets-cli.py ensure`（它负责正确属主）→ 命令返回成功，但实验室卷 `<run>-secrets` **仍为空**，容器因此进入 "secrets volume incomplete" 分支，nginx 未监听 6080。
   - **根因已查明**：`scripts/secrets-cli.py ensure` **拒绝接管不是自己创建的卷**（正确的所有权行为）。实验室先建了同名卷，CLI 因而失败、卷保持为空。手工验证：CLI 自己建卷时 `web.htpasswd`/`tls.*`/`vnc.pass`/`access.json` 全部正确写入，属主 `root:www-data`、目录 0750、htpasswd 0640（此前判定"缺失"是我 `head -8` 截断所致）。
-  - 按此修正夹具（不预建 secrets 卷、由 CLI 创建、结束显式删卷）后仍失败于 `gateway_probe_failed_verificationerror`，说明还有第二个耦合点；为避免留下不稳定断言，**已回退到稳定状态**，继续计为 `NOT_IMPLEMENTED`。
+  - **第二个耦合点也找到了**：`app()` 以命名卷挂载 `/run/feilian-secrets`，Docker 会**自动创建空卷**，于是 CLI 又拒绝接管。正确顺序：先删 app 容器 → 删空卷 → 让 CLI 建卷 → 再重建 app。
+  - 修正后 `auth.tls_wss` **通过**（`mock70`）：未认证 **401**、认证后 **200**、`/websockify` 升级 **101**，全部在真实 TLS + Basic Auth 下验证。
+  - 至此 **L2：19 项 PASS / 3 项 NOT_IMPLEMENTED**（`gateway.snat`、`gateway.syn_mss`、`fault.old_tcp`）。
   - 该路径在**手工验证**中曾通过（临时项目 `fl-e2e`：未认证 401、认证后 200、后端仅 Unix socket），但手工验证不算 L2，不计入验收。
 
 ## 外部门禁
