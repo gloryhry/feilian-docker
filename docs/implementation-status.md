@@ -143,9 +143,10 @@
     PASS  packets.no_plain_corporate_bootstrap
     PASS  cleanup.owned_resources / diag.data_plane_window
     FAIL(NOT_IMPLEMENTED) gateway.snat / gateway.syn_mss / auth.tls_wss
-                          fault.old_tcp / dns.full_mode / cleanup.foreign_marker
+                          fault.old_tcp / dns.full_mode
     ```
-    下一步按此清单逐个补齐：`dns.full_mode`、`cleanup.foreign_marker` 成本最低，随后 `fault.old_tcp`、`auth.tls_wss`，最后是网关 SNAT/MSS。
+  - 新增并通过 `cleanup.foreign_marker`：在 app netns 里造一张**外来** nft 表，执行 `egress_policy.py cleanup` 后断言外来表仍在、自有 `feilian_guard` 已移除 —— 这才让“清理是安全的”成为可验证事实，而不是口号。
+  - **L2 当前（`mock58`）：17 项 PASS / 5 项 NOT_IMPLEMENTED**。剩余按成本排序补齐：`dns.full_mode`（需以 full 模式重启 app）→ `fault.old_tcp`（旧连接重路由）→ `auth.tls_wss`（秘密卷 + TLS/WebSocket）→ `gateway.snat` / `gateway.syn_mss`（网关转发与 SYN MSS 实测）。
   - 修复两处阻断验收的真实缺陷：(1) 探针镜像构建沿用统一 `BUILD_NETWORK`（本机默认网络 DNS 被透明代理打断）；(2) 隔离容器 `--cap-drop ALL` 失去 `DAC_OVERRIDE` 后读不了属主不同的 0600 测试证书，仅对一次性测试 TLS 材料放宽为 0644（每轮独立隔离网络内的临时材料）。
 - **仍未执行**：L2 其余包级断言（代理经测试 TUN、guard 阻断、DNS 分域切换、网关 SNAT/MSS 真实包）、`scripts/deploy.sh` 的 digest 升级/回滚演练、README 重写。
 - Git 作者身份已配置；非交互 git push --dry-run 预检 exit 0，远端可接受目标功能分支。未实际推送。GitHub CLI 不存在，不因此安装系统工具。

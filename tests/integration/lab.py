@@ -374,9 +374,32 @@ class Lab:
             report.add("fault.controller_exit", "FAIL",
                        "controller_exit_probe_failed_" + type(exc).__name__.lower())
 
+        # Owned-only cleanup: a foreign nft table must survive while our own table
+        # is removed. This is the claim that makes "cleanup" safe to run.
+        try:
+            self.driver.docker("exec", self.names["app"], "nft", "add", "table", "inet",
+                               "feilian_foreign_probe", check=False)
+            self.driver.docker("exec", self.names["app"], "python3",
+                               "/opt/feilian/runtime/egress_policy.py", "cleanup",
+                               "--context", "/run/feilian-proxy/context.json", check=False)
+            tables = self.driver.docker("exec", self.names["app"], "nft", "list", "tables",
+                                        check=False).stdout.decode("utf-8", "replace")
+            foreign_kept = "feilian_foreign_probe" in tables
+            owned_gone = "feilian_guard" not in tables
+            report.add("cleanup.foreign_marker",
+                       "PASS" if foreign_kept and owned_gone else "FAIL",
+                       "foreign_table_preserved_and_owned_table_removed"
+                       if foreign_kept and owned_gone else
+                       "foreign_kept=%s owned_gone=%s" % (foreign_kept, owned_gone))
+            self.driver.docker("exec", self.names["app"], "nft", "delete", "table", "inet",
+                               "feilian_foreign_probe", check=False)
+        except Exception as exc:
+            report.add("cleanup.foreign_marker", "FAIL",
+                       "cleanup_probe_failed_" + type(exc).__name__.lower())
+
         # Explicitly unfinished acceptance gates: do not let a partial test lab
         # turn these into successful or optional checks.
-        for name in ("gateway.snat", "gateway.syn_mss", "auth.tls_wss", "fault.old_tcp", "dns.full_mode", "cleanup.foreign_marker"):
+        for name in ("gateway.snat", "gateway.syn_mss", "auth.tls_wss", "fault.old_tcp", "dns.full_mode"):
             report.add(name, "FAIL", "NOT_IMPLEMENTED")
 
 
