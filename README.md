@@ -110,6 +110,41 @@ curl --proxy socks5h://127.0.0.1:1088 https://intranet.example/
 
 ---
 
+## 把本容器当作企业网关（可选）
+
+代理适合「单个程序按需走企业网」；如果有些软件完全不支持代理，可以让它们把本容器当路由器。
+
+```bash
+# 1. 开启网关（ACCESS_SUBNET 是本项目专用的受信网段，不是你的办公网段）
+NET_MODE=bridge \
+GATEWAY_ENABLED=1 \
+ACCESS_SUBNET=192.168.77.0/24 \
+GATEWAY_SOURCE_CIDRS=192.168.77.0/24 \
+GATEWAY_IP=192.168.77.2 \
+MSS_MODE=auto \
+CORP_CIDRS=10.60.0.0/16 \
+VPN_PROBE_DNS_NAME=... VPN_PROBE_URL=... \
+./run.sh
+```
+
+`run.sh` 会创建（幂等，带所有权标签）`<project>-access` 网络并让容器加入。然后让消费者容器挂到同一网络，**只把企业网段**指过来：
+
+```bash
+docker run -d --name app --network feilian-access \
+  --cap-add NET_ADMIN my-image \
+  sh -c 'ip route add 10.60.0.0/16 via 192.168.77.2 && exec my-app'
+```
+
+几个必须知道的边界：
+
+- **只路由企业网段，不要 `0.0.0.0/0`**。全隧道会把消费者的公网流量也塞进企业出口。
+- 转发只在容器自己的 netns 内开启（`ip_forward`），不改宿主机。
+- `MSS_MODE=auto` 让内核按 PMTU 钳制；隧道 MTU 偏小时它能避免「能 ping、大文件卡住」。
+- 网关流量计入防泄漏承诺范围：隧道断开时这些转发同样被拒绝，不会回落到公网。
+- host 模式与 macvlan 无 shim 时不支持网关。
+
+---
+
 ## 配置
 
 所有配置走同一套校验（`scripts/config.py`），优先级 **CLI `--set` > 进程环境 > `.env` > 安全默认**。
@@ -165,17 +200,29 @@ curl --proxy socks5h://127.0.0.1:1088 https://intranet.example/
 
 | 级别 | 内容 | 当前状态 |
 |---|---|---|
-| L0 单元 | 配置解析、锁定下载、资源所有权、编排、DNS/代理/守卫渲染、秘密、部署回滚 | ✅ 273 项全绿 |
+| L0 单元 | 配置解析、锁定下载、资源所有权、编排、DNS/代理/守卫渲染、秘密、部署回滚 | ✅ 296 项全绿 |
 | L1 契约 | 三种模式的 Compose 渲染（端口/挂载/权限/秘密） | ✅ |
-| L2 隔离集成 | 真实内核 TUN + 假企业 DNS/HTTPS + 抓包断言 + 故障注入 | 🟡 18 项 PASS，4 项未实现 |
-| L3 真实客户端无账号 | 官方镜像启动、服务端口、GUI 登录页（**不等于**隧道可用） | ✅ CI 双架构原生 runner 通过 |
+| L2 隔离集成 | 真实内核 TUN + 假企业 DNS/HTTPS + 抓包断言 + 故障注入 | ✅ 22 项全部 PASS |
+| L3 真实客户端无账号 | 官方镜像启动、服务端口、**真实 Electron GUI 存活**（**不等于**隧道可用） | ✅ CI 双架构原生 runner 通过 |
 | L4 真实企业 | 企业识别码/账号/MFA、内网准入 | ❌ 未验证（需人工） |
 
-L2 已通过的项包括：代理三件套（HTTP/CONNECT/SOCKS5h）经隧道访问企业目标、分域与全量 DNS、
-断隧道/撤路由/IPv6 拒止、**控制器崩溃 fail-closed**、旧连接不再续传（规划中）、
-owned-only 清理与外来 nft 表保护、抓包证明引导接口无企业明文流量。
+> L2 用 mock 镜像（GUI 是 `xmessage`），所以它**无法**证明真实 Electron 能起来。
+> 这条由 L3 的 GUI 冒烟覆盖：CI 在两种原生架构上以 `START_GUI=1` 启动官方镜像，
+> 确认 `corplink --no-sandbox` 进程存活、日志无启动失败。
 
-未实现的 4 项（`fault.old_tcp`、`auth.tls_wss`、`gateway.snat`、`gateway.syn_mss`）**计为失败**，不会被当作通过。
+L2 覆盖：代理三件套（HTTP / CONNECT / SOCKS5h）经隧道访问企业目标、分域与全量 DNS、
+断隧道与撤路由后的拒止、IPv6 字面量拒止、**控制器崩溃 fail-closed**、
+**已有连接在隧道失效后无法续传**、owned-only 清理与外来 nft 表保护、
+抓包证明引导接口无企业明文流量，以及：
+
+- `auth.tls_wss`：管理入口的 **未认证 401 / 认证后 200 / WebSocket 升级 101**，
+  全部在真实 TLS + Basic Auth 下验证（使用真实秘密卷）。
+- `gateway.snat` / `gateway.syn_mss`：第二个容器挂在独立 access 网络上，
+  经本容器 masquerade 访问企业目标；回程 SYN-ACK 的 MSS 被 clamp 到配置值。
+
+```bash
+bash verify/all.sh --suite mock --run-id demo    # 输出 .state/verification/demo/report.json
+```
 
 ```bash
 bash verify/all.sh --suite unit

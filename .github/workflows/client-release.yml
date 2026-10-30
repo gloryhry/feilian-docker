@@ -138,6 +138,38 @@ jobs:
           [ "$ok" = "1" ] || { echo "runtime did not become healthy" >&2; exit 1; }
           echo "runtime healthy; VPN readiness must still be false without an account"
 
+      - name: GUI smoke (the real Electron client must stay up)
+        # The mock lab renders its window with xmessage and the runtime smoke above
+        # sets START_GUI=0, so nothing else exercises Electron. A lost --no-sandbox
+        # or --disable-gpu flag only shows up here.
+        run: |
+          set -eu
+          image="local/feilian:${GITHUB_SHA}-${{ matrix.arch }}"
+          docker rm -f fl-gui >/dev/null 2>&1 || true
+          docker run -d --name fl-gui --network none \
+            --security-opt no-new-privileges:true --cap-drop ALL \
+            --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add FSETID \
+            --cap-add KILL --cap-add SETGID --cap-add SETUID --cap-add SETPCAP \
+            --cap-add NET_BIND_SERVICE --cap-add SYS_CHROOT --cap-add MKNOD \
+            --cap-add AUDIT_WRITE --cap-add SETFCAP --cap-add NET_ADMIN \
+            --tmpfs /run:rw,size=64m --tmpfs /var/log/feilian:rw,size=64m \
+            -e FEILIAN_NETWORK_MODE=bridge -e START_NETWORKMANAGER=0 \
+            -e START_SERVICE=0 -e START_GUI=1 \
+            "$image"
+          alive=0
+          for _ in $(seq 1 12); do
+            sleep 5
+            if docker exec fl-gui sh -c 'pgrep -f "files/corplink --no-sandbox" >/dev/null'; then
+              alive=1
+              break
+            fi
+          done
+          echo "--- corplink-gui.log ---"
+          docker exec fl-gui sh -c 'tail -30 /var/log/feilian/corplink-gui.log' || true
+          docker rm -f fl-gui >/dev/null 2>&1 || true
+          [ "$alive" = "1" ] || { echo "Electron GUI never started; see the log above" >&2; exit 1; }
+          echo "GUI stayed alive for the whole window"
+
       - name: Diagnose registry auth (no secret values printed)
         if: needs.gate.outputs.approved == 'true'
         env:
