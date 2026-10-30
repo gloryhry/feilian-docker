@@ -122,6 +122,27 @@ print(json.dumps(out))
 """
 
 
+
+OLD_TCP_PROBE = r"""
+import socket, struct, subprocess, time
+s = socket.create_connection(('127.0.0.1', 1080), timeout=5)
+s.sendall(b'\x05\x01\x00')
+print('greeting_ok', s.recv(2) == b'\x05\x00', flush=True)
+host = b'health.corp.test'
+s.sendall(b'\x05\x01\x00\x03' + bytes([len(host)]) + host + struct.pack('!H', 443))
+reply = s.recv(10)
+print('established', len(reply) > 1 and reply[1] == 0, flush=True)
+subprocess.run(['ip', 'link', 'set', 'dev', 'labtun0', 'down'], check=False)
+time.sleep(1)
+try:
+    s.sendall(b'x' * 64)
+    s.settimeout(3)
+    data = s.recv(64)
+    print('post_down got_data', len(data), flush=True)
+except Exception as exc:
+    print('post_down blocked', type(exc).__name__, flush=True)
+"""
+
 class Lab:
     def __init__(self, driver, args):
         self.driver, self.args = driver, args
@@ -334,6 +355,30 @@ class Lab:
         split_ok = query.returncode == 0 and b"10.91.0.80" in query.stdout
         report.add("dns.connected_split", "PASS" if split_ok else "FAIL",
                    "corporate_dns_via_tunnel" if split_ok else "getent=" + query.stderr.decode("utf-8", "replace").strip()[:120])
+
+        # An established TCP connection must not keep carrying corporate data after
+        # the tunnel is gone (no silent re-route onto the bootstrap interface).
+        try:
+            result = self.driver.docker("exec", self.names["app"], "python3", "-c",
+                                        OLD_TCP_PROBE, check=False)
+            out = (result.stdout or b"").decode("utf-8", "replace")
+            err = (result.stderr or b"").decode("utf-8", "replace")
+            established = "established True" in out
+            # Either an exception OR an immediate EOF with zero payload proves the
+            # established socket can no longer carry corporate data.
+            blocked = "post_down blocked" in out or "post_down got_data 0" in out
+            detail = ("established_connection_blocked_after_tunnel_loss"
+                      if established and blocked
+                      else ("rc=%d out=%r err=%r" % (result.returncode, out[-120:], err[-120:])))
+            report.add("fault.old_tcp", "PASS" if established and blocked else "FAIL", detail[:200])
+        except Exception as exc:
+            report.add("fault.old_tcp", "FAIL", "old_tcp_probe_failed_" + type(exc).__name__.lower())
+        self.driver.docker("exec", self.names["app"], "ip", "link", "set", "dev", "labtun0",
+                           "up", check=False)
+        self.driver.docker("exec", self.names["app"], "ip", "route", "replace", CORP,
+                           "via", "10.254.0.2", "dev", "labtun0", check=False)
+        self.wait_status(True)
+
         before_queries = self.counter()
         self.driver.docker("exec", self.names["app"], "ip", "link", "set", "dev", "labtun0", "down")
         self.wait_status(False)
@@ -501,7 +546,7 @@ class Lab:
 
         # Explicitly unfinished acceptance gates: do not let a partial test lab
         # turn these into successful or optional checks.
-        for name in ("gateway.snat", "gateway.syn_mss", "fault.old_tcp"):
+        for name in ("gateway.snat", "gateway.syn_mss"):
             report.add(name, "FAIL", "NOT_IMPLEMENTED")
 
 

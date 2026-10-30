@@ -162,6 +162,8 @@
   - **第二个耦合点也找到了**：`app()` 以命名卷挂载 `/run/feilian-secrets`，Docker 会**自动创建空卷**，于是 CLI 又拒绝接管。正确顺序：先删 app 容器 → 删空卷 → 让 CLI 建卷 → 再重建 app。
   - 修正后 `auth.tls_wss` **通过**（`mock70`）：未认证 **401**、认证后 **200**、`/websockify` 升级 **101**，全部在真实 TLS + Basic Auth 下验证。
   - 至此 **L2：19 项 PASS / 3 项 NOT_IMPLEMENTED**（`gateway.snat`、`gateway.syn_mss`、`fault.old_tcp`）。
+  - 随后补齐 `fault.old_tcp` 并通过（`mock74`）：在数据面开启窗口内建立 SOCKS5 连接，探针自行把 `labtun0` down，再尝试写入；实测得到 **立即 EOF（0 字节）**——连接被拆除、数据无法续传。判定同时接受“抛异常”与“零字节 EOF”两种 fail-closed 表现。
+  - **L2 当前（`mock74`）：20 项 PASS / 2 项 NOT_IMPLEMENTED**（`gateway.snat`、`gateway.syn_mss`）。
   - 该路径在**手工验证**中曾通过（临时项目 `fl-e2e`：未认证 401、认证后 200、后端仅 Unix socket），但手工验证不算 L2，不计入验收。
 
 ## 外部门禁
