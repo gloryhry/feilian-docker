@@ -198,6 +198,23 @@ class SupervisorTests(unittest.TestCase):
         cleanup = [c.args[0] for c in supervisor._run_tool.call_args_list][-1]
         self.assertEqual(cleanup[2], "cleanup")
 
+    def test_proxy_source_cidrs_reach_the_policy_context(self):
+        # Hard-coding this to [] silently disabled the documented setting, so
+        # other containers on the same network could never use the proxy.
+        supervisor = self.supervisor(PROXY_SOURCE_CIDRS="172.20.0.0/16")
+        supervisor.write = None
+        status = {"evidence": {"interface": "labvpn0", "interface_ifindex": 9,
+                               "vpn_ipv4": ["10.99.0.2"], "dns_servers": ["10.91.0.53"]}}
+        context = supervisor.context(status)
+        self.assertEqual(context["source_cidrs"], ["172.20.0.0/16"])
+        empty = self.supervisor().context(status)
+        self.assertEqual(empty["source_cidrs"], [])
+
+    def test_gateway_source_cidrs_are_split_the_same_way(self):
+        supervisor = self.supervisor(GATEWAY_SOURCE_CIDRS="192.168.77.0/24,192.168.78.5/32")
+        self.assertEqual(supervisor._gateway_context()["source_cidrs"],
+                         ["192.168.77.0/24", "192.168.78.5/32"])
+
     def test_gui_keeps_electron_flags_in_argv(self):
         supervisor = self.supervisor(START_GUI="1", GUI_MODE="vnc")
         supervisor._bootstrap_plan()

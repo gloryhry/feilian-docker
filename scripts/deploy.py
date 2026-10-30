@@ -33,8 +33,25 @@ class DeployError(Exception):
 def run(argv, check=True):
     result = subprocess.run(argv, capture_output=True, text=True, check=False)
     if check and result.returncode:
-        raise DeployError("command failed: " + argv[0] + " " + argv[1])
+        detail = (result.stderr or result.stdout or "").strip().splitlines()
+        tail = detail[-1][:160] if detail else "unknown error"
+        raise DeployError("command failed: " + argv[0] + " " + argv[1] + " -> " + tail)
     return result
+
+
+def ensure_present(digest: str) -> None:
+    """Make the exact digest available locally *before* any downtime.
+
+    Without this, run.sh sees a missing image and tries to *build* from it,
+    which happily turns a pull request into a wrong-tag build.
+    """
+    if run(["docker", "image", "inspect", digest], check=False).returncode == 0:
+        return
+    pulled = run(["docker", "pull", digest], check=False)
+    if pulled.returncode:
+        raise DeployError("image pull failed; the running container was left untouched")
+    if run(["docker", "image", "inspect", digest], check=False).returncode:
+        raise DeployError("image still missing after pull; container left untouched")
 
 
 def resolve_digest(image: str) -> str:
@@ -97,14 +114,22 @@ def current_image(project: str) -> str:
 def plan(project: str, image: str, root: Path) -> dict:
     target = resolve_digest(image)
     record = read_record(record_path(project, root)) or {}
+    recorded = record.get("digest") or None
+    container = current_image(project) or None
     return {
         "schema_version": 1, "project": project, "target": target,
-        "current": record.get("digest") or None,
-        "container": current_image(project) or None,
-        "actions": ["stop container (volumes preserved)",
-                    "verify image digest " + target,
-                    "start with the recorded digest",
-                    "record digest and rollback point"],
+        "current": recorded,
+        "state": record.get("state"),
+        "container": container,
+        # The record describes intent; the container describes reality. A manual
+        # `docker run` can make them disagree, and silently reporting the record
+        # would hide it.
+        "divergence": bool(recorded and container and recorded not in container),
+        "actions": ["ensure the exact digest is present locally",
+                    "stop container (volumes preserved)",
+                    "start with the target digest",
+                    "roll back automatically if the start fails",
+                    "record digest, state and rollback point"],
         "volumes_preserved": True,
     }
 
@@ -113,26 +138,43 @@ def apply(project: str, image: str, root: Path, dry_run: bool) -> dict:
     target = resolve_digest(image)
     path = record_path(project, root)
     existing = read_record(path)
-    previous = (existing or {}).get("digest")
+    previous = (existing or {}).get("digest") if existing else None
     result = plan(project, image, root)
     if dry_run:
         return result
+
+    # Everything that can fail without touching the service happens first.
+    ensure_present(target)
+
+    history = [h for h in (existing or {}).get("history", []) if isinstance(h, dict)][-4:]
     if existing is not None:
-        # Keep a bounded rollback chain: the immediately previous deployment.
-        history = [item for item in existing.get("history", []) if isinstance(item, dict)][-4:]
         history.append({"digest": existing.get("digest"), "at": existing.get("at")})
-        record = {"schema_version": 1, "project": project, "digest": target,
-                  "previous": previous, "at": time.time(), "history": history}
-    else:
-        record = {"schema_version": 1, "project": project, "digest": target,
-                  "previous": None, "at": time.time(), "history": []}
-    write_record(path, record)
-    # The container itself is (re)started by run.sh with an explicit digest.
+    pending = {"schema_version": 1, "project": project, "digest": target,
+               "previous": previous, "at": time.time(), "history": history,
+               "state": "pending"}
+    write_record(path, pending)
+
+    # The container is (re)started by run.sh with an explicit digest.
     run(["docker", "rm", "--force", project], check=False)
     started = run(["bash", str(root / "run.sh"), "--set", "IMAGE_REF=" + target], check=False)
     if started.returncode:
-        raise DeployError("run.sh failed; the previous digest stays recorded for rollback")
-    return dict(result, applied=True, previous=previous)
+        if previous:
+            restored = run(["bash", str(root / "run.sh"),
+                            "--set", "IMAGE_REF=" + previous], check=False)
+            if restored.returncode:
+                write_record(path, dict(pending, state="failed"))
+                raise DeployError(
+                    "start failed and the automatic rollback also failed; "
+                    "manual recovery required (previous digest " + previous + ")")
+            write_record(path, {"schema_version": 1, "project": project, "digest": previous,
+                                "previous": target, "at": time.time(),
+                                "history": history, "state": "rolled_back"})
+            raise DeployError("start failed; rolled back to the previous digest")
+        write_record(path, dict(pending, state="failed"))
+        raise DeployError("start failed and there is no previous digest to roll back to")
+
+    write_record(path, dict(pending, state="active"))
+    return dict(result, applied=True, previous=previous, state="active")
 
 
 def rollback(project: str, root: Path, dry_run: bool) -> dict:
@@ -144,14 +186,16 @@ def rollback(project: str, root: Path, dry_run: bool) -> dict:
     if not previous or not DIGEST.search(previous):
         raise DeployError("no verifiable previous digest; manual recovery required")
     if dry_run:
-        return {"schema_version": 1, "project": project, "restore": previous}
+        return {"schema_version": 1, "project": project, "restore": previous,
+                "from_state": record.get("state")}
+    ensure_present(previous)
     run(["docker", "rm", "--force", project], check=False)
     started = run(["bash", str(root / "run.sh"), "--set", "IMAGE_REF=" + previous], check=False)
     if started.returncode:
         raise DeployError("rollback start failed; record left untouched")
     write_record(path, {"schema_version": 1, "project": project, "digest": previous,
                         "previous": record.get("digest"), "at": time.time(),
-                        "history": record.get("history", [])})
+                        "history": record.get("history", []), "state": "active"})
     return {"schema_version": 1, "project": project, "restored": previous}
 
 

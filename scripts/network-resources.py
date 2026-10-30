@@ -200,6 +200,45 @@ class Resources:
         self.save()
         return {"action": "created", "network": name, "id": created["Id"], "bridge": self.bridge}
 
+    def ensure_access(self, subnet: str, dry_run=False):
+        """Create the dedicated access network the SNAT gateway serves.
+
+        Keeping it separate from the project bridge is what makes the gateway
+        scope auditable: only containers attached here can reach corporate
+        networks through this project.
+        """
+        try:
+            network = ipaddress.ip_network(subnet or "", strict=True)
+        except ValueError as exc:
+            raise ResourceError("ACCESS_SUBNET must be an explicit IPv4 CIDR") from exc
+        if network.version != 4 or network.prefixlen == 0:
+            raise ResourceError("ACCESS_SUBNET must be a non-default IPv4 CIDR")
+        name = f"{self.project}-access"
+        current = self.inspect(name)
+        if current:
+            self.assert_owner(current, name, "bridge")
+            configs = current.get("IPAM", {}).get("Config", [])
+            if len(configs) != 1 or configs[0].get("Subnet") != str(network):
+                raise ResourceError("existing access network uses a different subnet")
+            return {"action": "reuse", "network": name, "id": current["Id"],
+                    "subnet": str(network)}
+        command = ["docker", "network", "create", "--driver", "bridge", "--label",
+                   f"{LABEL}={self.owner}", "--label", f"{PROJECT_LABEL}={self.project}",
+                   "--label", "io.feilian.role=access", "--subnet", str(network), name]
+        if dry_run:
+            return {"action": "create", "network": name, "command": command,
+                    "subnet": str(network)}
+        self.runner.call(command)
+        created = self.inspect(name)
+        if created is None:
+            raise ResourceError("created access network could not be verified")
+        self.assert_owner(created, name, "bridge")
+        self.ledger["networks"].append({"name": name, "id": created["Id"],
+                                        "driver": "bridge", "role": "access"})
+        self.save()
+        return {"action": "created", "network": name, "id": created["Id"],
+                "subnet": str(network)}
+
     def bridge_details(self):
         name = f"{self.project}-net"
         network = self.inspect(name)
@@ -381,7 +420,9 @@ class Resources:
             if driver == "macvlan" and not include_macvlan:
                 kept_networks.append(entry)
                 continue
-            name = f"{self.project}-{'net' if driver == 'bridge' else 'macvlan'}"
+            role = entry.get("role", "")
+            name = (f"{self.project}-access" if role == "access"
+                    else f"{self.project}-{'net' if driver == 'bridge' else 'macvlan'}")
             if driver not in ("bridge", "macvlan") or entry.get("name") != name:
                 raise ResourceError("invalid network ledger entry")
             current = self.inspect(name)
@@ -416,11 +457,14 @@ def main(argv=None):
     parser.add_argument("--ip", default=os.environ.get("MACVLAN_IP", ""))
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--include-macvlan", action="store_true")
+    parser.add_argument("--subnet", default=os.environ.get("ACCESS_SUBNET", ""))
     args = parser.parse_args(argv)
     try:
         resources = Resources(args.project)
         if args.action == "ensure-bridge":
             result = resources.ensure_bridge(args.dry_run)
+        elif args.action == "ensure-access":
+            result = resources.ensure_access(args.subnet, args.dry_run)
         elif args.action == "doctor":
             result = resources.doctor(args.up_if)
         elif args.action == "plan":

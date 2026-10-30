@@ -162,6 +162,33 @@ class NetworkResourceTests(unittest.TestCase):
         self.assertEqual(self.runner.rules, [])
         self.assertEqual(self.resources.ledger["ufw_rules"], [])
 
+    def test_ensure_access_creates_owned_network_with_exact_subnet(self):
+        result = self.resources.ensure_access("192.168.77.0/24")
+        self.assertEqual(result["action"], "created")
+        self.assertEqual(result["subnet"], "192.168.77.0/24")
+        self.assertEqual(self.resources.ensure_access("192.168.77.0/24")["action"], "reuse")
+
+    def test_ensure_access_refuses_a_subnet_change(self):
+        self.resources.ensure_access("192.168.77.0/24")
+        with self.assertRaises(nr.ResourceError):
+            self.resources.ensure_access("192.168.78.0/24")
+
+    def test_ensure_access_rejects_foreign_network_and_default_subnet(self):
+        self.resources.ensure_access("192.168.77.0/24")
+        self.runner.networks["test-project-access"]["Labels"][nr.LABEL] = "someone-else"
+        with self.assertRaises(nr.ResourceError):
+            self.resources.ensure_access("192.168.77.0/24")
+        for bad in ("", "0.0.0.0/0", "192.168.77.5/24", "fd00::/64"):
+            with self.subTest(subnet=bad), self.assertRaises(nr.ResourceError):
+                self.resources.ensure_access(bad)
+
+    def test_cleanup_removes_the_access_network_by_its_own_name(self):
+        self.resources.ensure_access("192.168.77.0/24")
+        self.resources.cleanup()
+        self.assertEqual(self.runner.networks, {})
+        self.assertEqual([c for c in self.mutations() if "rm" in c], [["docker", "network", "rm",
+                         self.runner.calls[-1][-1]]])
+
     def test_doctor_is_read_only_and_reports_transparent_proxy(self):
         self.bridge()
         before = len(self.mutations())

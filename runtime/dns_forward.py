@@ -24,6 +24,7 @@ policy file; it never writes configuration and never touches firewall state.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import os
 from pathlib import Path
 import signal
@@ -31,10 +32,14 @@ import socket
 import stat
 import struct
 import sys
+import threading
 import time
 
 MAX_MESSAGE = 1232
 DEFAULT_TIMEOUT = 3.0
+# One stalled corporate resolver must not queue every other lookup behind it.
+MAX_WORKERS = 16
+MAX_INFLIGHT = 256
 MAX_DEPTH = 16
 
 
@@ -174,8 +179,21 @@ def forward(query: bytes, address: str, iface: str, timeout: float = DEFAULT_TIM
         sock.close()
 
 
+def _answer(query: bytes, policy: dict) -> bytes:
+    """Resolve one query against an immutable policy snapshot."""
+    try:
+        name, _ = _qname(query)
+    except PolicyError:
+        return _servfail(query)
+    address, iface, blocked = select_upstream(policy, name)
+    if blocked:
+        return _nxdomain(query) or _servfail(query)
+    reply = forward(query, address, iface) if address else None
+    return reply or _servfail(query)
+
+
 def serve(policy_path: Path, listen: str = "127.0.0.1", port: int = 53, stop_after=None,
-          wait_for_policy: float = 60.0):
+          wait_for_policy: float = 60.0, workers: int = MAX_WORKERS):
     # The DNS owner renders the policy on its own schedule; starting before that
     # must not be fatal, otherwise readiness never settles into DNS-activate.
     deadline = time.time() + wait_for_policy
@@ -194,6 +212,8 @@ def serve(policy_path: Path, listen: str = "127.0.0.1", port: int = 53, stop_aft
     server.settimeout(0.5)
     stopping = {"flag": False}
     reloading = {"flag": False}
+    inflight = {"count": 0}
+    guard = threading.Lock()
 
     def _stop(*_):
         stopping["flag"] = True
@@ -208,41 +228,62 @@ def serve(policy_path: Path, listen: str = "127.0.0.1", port: int = 53, stop_aft
         signal.signal(sig, _stop)
     signal.signal(signal.SIGHUP, _reload)
 
-    deadline = time.time() + stop_after if stop_after else None
-    while not stopping["flag"]:
-        if deadline and time.time() >= deadline:
-            break
+    def _work(query, peer, snapshot):
+        """Runs in the pool: never let one exception kill the forwarder."""
         try:
-            query, peer = server.recvfrom(MAX_MESSAGE)
-        except socket.timeout:
-            continue
-        except OSError:
-            break
+            reply = _answer(query, snapshot)
+        except Exception:  # defensive: a resolver bug must not take DNS down
+            reply = _servfail(query)
         try:
-            if reloading["flag"] or policy_path.stat().st_mtime != stamp:
-                reloading["flag"] = False
-                policy = load_policy(policy_path)
-                stamp = policy_path.stat().st_mtime
+            if reply:
+                server.sendto(reply, peer)
         except OSError:
             pass
-        except PolicyError:
-            # Keep serving with the last known good policy rather than dying on a
-            #半写/非法文件.
-            pass
-        try:
-            name, _ = _qname(query)
-        except PolicyError:
-            malformed = _servfail(query)
-            if malformed:
-                server.sendto(malformed, peer)
-            continue
-        address, iface, blocked = select_upstream(policy, name)
-        if blocked:
-            server.sendto(_nxdomain(query), peer)
-            continue
-        reply = forward(query, address, iface) if address else None
-        server.sendto(reply if reply else _servfail(query), peer)
-    server.close()
+        finally:
+            with guard:
+                inflight["count"] -= 1
+
+    # A single-threaded pool keeps the old serial behaviour available for tests
+    # and for debugging a suspected ordering problem.
+    pool = ThreadPoolExecutor(max_workers=max(1, workers), thread_name_prefix="dnsfwd")
+    hard_deadline = time.time() + stop_after if stop_after else None
+    try:
+        while not stopping["flag"]:
+            if hard_deadline and time.time() >= hard_deadline:
+                break
+            try:
+                query, peer = server.recvfrom(MAX_MESSAGE)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            try:
+                if reloading["flag"] or policy_path.stat().st_mtime != stamp:
+                    reloading["flag"] = False
+                    policy = load_policy(policy_path)  # new dict: older tasks keep theirs
+                    stamp = policy_path.stat().st_mtime
+            except OSError:
+                pass
+            except PolicyError:
+                # Keep serving with the last known good policy rather than dying on
+                # a half-written or invalid file.
+                pass
+            with guard:
+                overloaded = inflight["count"] >= MAX_INFLIGHT
+                if not overloaded:
+                    inflight["count"] += 1
+            if overloaded:
+                busy = _servfail(query)
+                if busy:
+                    try:
+                        server.sendto(busy, peer)
+                    except OSError:
+                        pass
+                continue
+            pool.submit(_work, query, peer, policy)
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+        server.close()
 
 
 def main(argv=None) -> int:

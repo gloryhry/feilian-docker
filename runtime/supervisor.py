@@ -331,6 +331,10 @@ class Supervisor:
             return None
         return status
 
+    @staticmethod
+    def _split_env(value: str) -> list:
+        return [item for item in (value or "").split(",") if item]
+
     def context(self, status) -> dict:
         evidence = status.get("evidence") if isinstance(status.get("evidence"), dict) else {}
         interface = evidence.get("interface") or ""
@@ -351,7 +355,12 @@ class Supervisor:
             # evidence.vpn_ipv4 is already a bounded list; never nest it again.
             "vpn_ipv4": [item for item in (evidence.get("vpn_ipv4") or [])
                          if isinstance(item, str)],
-            "vpn_dns": dns, "source_cidrs": [], "corp_cidrs": corp, "management_cidrs": [],
+            "vpn_dns": dns,
+            # Sources allowed to use the raw HTTP/SOCKS proxy. This is what makes
+            # the proxy usable by other containers on the same Docker network; it
+            # used to be hard-coded empty, so the documented setting did nothing.
+            "source_cidrs": self._split_env(self.env.get("PROXY_SOURCE_CIDRS", "")),
+            "corp_cidrs": corp, "management_cidrs": [],
             "access_interface": self.env.get("ACCESS_INTERFACE", "eth0"),
             "bridge_gateway": self.env.get("BRIDGE_GATEWAY", ""), "macvlan_shim": False,
             "http_port": int(self.env.get("HTTP_PROXY_INTERNAL_PORT", "8118")),
@@ -367,10 +376,6 @@ class Supervisor:
         require sources/subnet/address), so an enabled gateway silently produced
         a guard with no SNAT or MSS chain at all.
         """
-        def split(key):
-            raw = self.env.get(key, "") or ""
-            return [item for item in raw.split(",") if item]
-
         mss = (self.env.get("MSS_MODE", "off") or "off").strip()
         if mss not in ("off", "auto"):
             try:
@@ -379,7 +384,7 @@ class Supervisor:
                 mss = "off"
         return {
             "enabled": self.env.get("GATEWAY_ENABLED", "0") == "1",
-            "source_cidrs": split("GATEWAY_SOURCE_CIDRS"),
+            "source_cidrs": self._split_env(self.env.get("GATEWAY_SOURCE_CIDRS", "")),
             "access_subnet": self.env.get("ACCESS_SUBNET", "") or "",
             "gateway_ipv4": self.env.get("GATEWAY_IP", "") or "",
             "mss": mss,

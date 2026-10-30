@@ -46,6 +46,8 @@ if (( dry_run )); then
   case "$NET_MODE" in
     bridge|auto)
       feilian_print_command "${network_tool[@]}" ensure-bridge "${network_args[@]}"
+      [[ "$GATEWAY_ENABLED" != 1 ]] || feilian_print_command "${network_tool[@]}" \
+        ensure-access "${network_args[@]}" --subnet "$ACCESS_SUBNET"
       if (( prepare_network )); then
         feilian_print_command "${network_tool[@]}" apply "${network_args[@]}"
       fi
@@ -95,6 +97,13 @@ probe_bridge() {
 case "$NET_MODE" in
   bridge|auto)
     "${network_tool[@]}" ensure-bridge "${network_args[@]}"
+    if [[ "$GATEWAY_ENABLED" == "1" ]]; then
+      log "Preparing the dedicated gateway access network ($ACCESS_SUBNET)..."
+      "${network_tool[@]}" ensure-access "${network_args[@]}" --subnet "$ACCESS_SUBNET" >/dev/null || {
+        log 'Access network preparation failed; refusing to start a gateway without it.' >&2
+        exit 1
+      }
+    fi
     if (( prepare_network )); then
       "${network_tool[@]}" apply "${network_args[@]}"
     fi

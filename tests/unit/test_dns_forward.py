@@ -6,6 +6,8 @@ from pathlib import Path
 import socket
 import struct
 import tempfile
+import threading
+import time
 import unittest
 from unittest import mock
 
@@ -112,6 +114,77 @@ class MessageTests(unittest.TestCase):
         policy_sock.recvfrom.side_effect = socket.timeout()
         with mock.patch.object(fwd.socket, "socket", return_value=policy_sock):
             self.assertIsNone(fwd.forward(make_query("health.corp.test"), "10.91.0.53", ""))
+
+
+class ServeConcurrencyTests(unittest.TestCase):
+    """The forwarder must never queue every lookup behind one stalled resolver."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory(prefix="dnsfwd-serve-")
+        self.addCleanup(tmp.cleanup)
+        self.policy = Path(tmp.name) / "servers"
+        self.policy.write_text("server=127.0.0.11\n")
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        probe.bind(("127.0.0.1", 0))
+        self.port = probe.getsockname()[1]
+        probe.close()
+
+    def _serve(self, **kwargs):
+        patch = mock.patch.object(fwd.signal, "signal", lambda *a: None)
+        patch.start()
+        self.addCleanup(patch.stop)
+        thread = threading.Thread(
+            target=fwd.serve, args=(self.policy,),
+            kwargs=dict({"listen": "127.0.0.1", "port": self.port, "stop_after": 6}, **kwargs),
+            daemon=True)
+        thread.start()
+        self.addCleanup(lambda: thread.join(timeout=8))
+        time.sleep(0.3)
+        return thread
+
+    def _ask(self, name, timeout=2.0):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(timeout)
+        try:
+            sock.sendto(make_query(name), ("127.0.0.1", self.port))
+            data, _ = sock.recvfrom(512)
+            return data
+        finally:
+            sock.close()
+
+    def test_a_stalled_upstream_does_not_block_other_names(self):
+        slow_started = threading.Event()
+
+        def fake_forward(query, address, iface, timeout=3.0):
+            name, _ = fwd._qname(query)
+            if name.startswith("slow"):
+                slow_started.set()
+                time.sleep(2.0)
+            return query[:2] + b"ANSWER"
+
+        with mock.patch.object(fwd, "forward", fake_forward):
+            self._serve()
+            slow = threading.Thread(target=lambda: self._ask("slow.corp.test", 4.0), daemon=True)
+            slow.start()
+            self.assertTrue(slow_started.wait(2.0), "slow query never reached the upstream")
+            started = time.monotonic()
+            self.assertEqual(self._ask("fast.corp.test", 1.5)[:2],
+                             make_query("fast.corp.test")[:2])
+            self.assertLess(time.monotonic() - started, 1.5)
+            slow.join(timeout=6)
+
+    def test_overload_answers_servfail_instead_of_growing_without_bound(self):
+        def stalled(query, address, iface, timeout=3.0):
+            time.sleep(2.0)
+            return query[:2] + b"LATE"
+
+        with mock.patch.object(fwd, "forward", stalled), \
+                mock.patch.object(fwd, "MAX_INFLIGHT", 1):
+            self._serve(workers=1)
+            threading.Thread(target=lambda: self._ask("stall.corp.test", 4.0), daemon=True).start()
+            time.sleep(0.2)
+            reply = self._ask("overflow.corp.test", 1.5)
+        self.assertEqual(reply[2:4], b"\x81\x82")  # SERVFAIL, not a dropped packet
 
 
 if __name__ == "__main__":

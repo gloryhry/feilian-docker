@@ -1,0 +1,21 @@
+name: ${PROJECT_NAME:-feilian}
+
+# Overlay used only when GATEWAY_ENABLED=1. It attaches the runtime to a second,
+# dedicated access network so other containers can use it as an SNAT gateway
+# without sharing the bootstrap network.
+#
+# The network is created and owned by scripts/network-resources.py ensure-access
+# (run.sh does that before composing), so `external: true` is correct here.
+services:
+  feilian:
+    networks:
+      - feilian-net
+      - feilian-access
+
+networks:
+  feilian-net:
+    external: true
+    name: ${PROJECT_NAME:-feilian}-net
+  feilian-access:
+    external: true
+    name: ${PROJECT_NAME:-feilian}-access
