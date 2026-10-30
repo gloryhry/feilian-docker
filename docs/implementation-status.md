@@ -153,6 +153,14 @@
 - Git 作者身份已配置；非交互 git push --dry-run 预检 exit 0，远端可接受目标功能分支。未实际推送。GitHub CLI 不存在，不因此安装系统工具。
 - 旧 README 实测不自动当作新代码验收证据。
 
+### L2 剩余门禁的尝试记录（避免重复踩坑）
+
+- `auth.tls_wss` 尝试两版后**回退**（不留半成品）：
+  1. 直接在容器内跑 `secrets_volume.py ensure` 生成秘密 → 网关拒绝启动（`secrets volume incomplete`）：helper 直调生成的 `web.htpasswd` 组属主不是 `www-data`，与 `web_gateway.py` 的严格校验不符。
+  2. 改用宿主侧 `scripts/secrets-cli.py ensure`（它负责正确属主）→ 命令返回成功，但实验室卷 `<run>-secrets` **仍为空**，容器因此进入 "secrets volume incomplete" 分支，nginx 未监听 6080。
+  - 结论：宿主 CLI 与实验室卷的对接方式还没对上，值得单独一轮排查（例如 CLI 是否把文件写在 helper 的 `/secrets` 之外的路径，或它依据既有 owner 标签判断而跳过写入）。
+  - 该路径在**手工验证**中曾通过（临时项目 `fl-e2e`：未认证 401、认证后 200、后端仅 Unix socket），但手工验证不算 L2，不计入验收。
+
 ## 外部门禁
 
 - Git作者身份、GitHub独立分支非交互push --dry-run已通过；尚未实际推送，GHCR/Actions权限与保护环境仍待验证；不在对话或日志中索取/打印token。
