@@ -52,7 +52,10 @@
   - digest 拉取成功，标签核对 `schema=1 kind=official version=3.2.16`。
   - 包内另有早期探针标签 `conn-probe-r1`，可按需删除。
 - 管理网关鉴权+TLS 端到端已实跑通过（临时秘密卷，用后删除）：未认证 401、认证后 200、后端仅 Unix socket。
-- **L2 隔离验收（进行中）**：`verify/all.sh --suite mock` 已能真实执行并产出结构化报告。当前：`mock.kind` PASS、`mock.waiting_auth` PASS（无可信隧道不进入 READY）、`proxy.before_ready` PASS（未就绪拒绝数据面）、`cleanup.owned_resources` PASS（只清理带 owner 的资源）；`mock.driver` FAIL 于 `runtime_status_timeout`（应用容器未在时限内产出 status.json），下一轮继续定位。
+- **L2 隔离验收（进行中）**：`verify/all.sh --suite mock` 已能真实执行并产出结构化报告。当前：`mock.kind` PASS、`mock.waiting_auth` PASS（无可信隧道不进入 READY）、`proxy.before_ready` PASS（未就绪拒绝数据面）、`cleanup.owned_resources` PASS（只清理带 owner 的资源）；`mock.driver` 仍 FAIL 于 `runtime_status_timeout`，但每轮都在前移：
+  1. 修掉**生产缺陷**：`dnsmasq --no-daemon` 不会自己写 pid 文件，DNS 属主因此永远判定未激活（`dns_active:false`，resolv 不切换）。改为由 supervisor 作为父进程原子发布 `/run/feilian/dnsmasq.pid`（0600），并补单元测试。修复后容器内实测 `dns_active:true`、`/etc/resolv.conf` 已切到 `nameserver 127.0.0.1`。
+  2. 修掉**夹具缺陷**：测试 CA 缺少 `basicConstraints/keyUsage`，OpenSSL 3 拒绝（`CA cert does not include key usage extension`）——生产端严格校验是正确的，夹具补 `-addext` 后 TLS 链路可通。
+  3. 容器内直连验证：到 `10.91.0.80:443` 的 TLS 与绑源连接均成功，说明网络面已通；剩余超时点在探针/就绪判定，下一轮继续。
   - 修复两处阻断验收的真实缺陷：(1) 探针镜像构建沿用统一 `BUILD_NETWORK`（本机默认网络 DNS 被透明代理打断）；(2) 隔离容器 `--cap-drop ALL` 失去 `DAC_OVERRIDE` 后读不了属主不同的 0600 测试证书，仅对一次性测试 TLS 材料放宽为 0644（每轮独立隔离网络内的临时材料）。
 - **仍未执行**：L2 其余包级断言（代理经测试 TUN、guard 阻断、DNS 分域切换、网关 SNAT/MSS 真实包）、`scripts/deploy.sh` 的 digest 升级/回滚演练、README 重写。
 - Git 作者身份已配置；非交互 git push --dry-run 预检 exit 0，远端可接受目标功能分支。未实际推送。GitHub CLI 不存在，不因此安装系统工具。

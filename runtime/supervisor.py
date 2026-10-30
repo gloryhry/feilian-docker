@@ -71,6 +71,24 @@ def _atomic_json(path: Path, data: dict) -> None:
             temporary.unlink(missing_ok=True)
 
 
+def _atomic_text(path: Path, text: str, mode: int = 0o600) -> None:
+    if path.is_symlink():
+        raise SupervisorError("refusing symlinked runtime file")
+    fd, name = tempfile.mkstemp(prefix=".runtime-", suffix=".part", dir=path.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+        temporary = None
+    finally:
+        if temporary is not None and temporary.parent == path.parent:
+            temporary.unlink(missing_ok=True)
+
+
 def read_json(path: Path, limit: int = MAX_CONTEXT):
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     with os.fdopen(fd, "rb") as stream:
@@ -95,8 +113,12 @@ def pid_alive(pid: int) -> bool:
 class Process:
     """One supervised child in its own session/process group."""
 
-    def __init__(self, name, argv, *, user="", env_extra=None, log="", required=False):
+    def __init__(self, name, argv, *, user="", env_extra=None, log="", required=False,
+                 pid_file=None):
         self.name, self.argv, self.user = name, list(argv), user
+        # dnsmasq --no-daemon never writes its own pid file, but the DNS owner
+        # verifies and HUPs by pid; the supervisor, as the parent, publishes it.
+        self.pid_file = Path(pid_file) if pid_file else None
         self.env_extra = dict(env_extra or {})
         self.log = LOG_DIR / (log or name + ".log")
         self.required = required
@@ -122,6 +144,8 @@ class Process:
         )
         self.pid = self.handle.pid
         self.started_at = time.time()
+        if self.pid_file is not None:
+            _atomic_text(self.pid_file, f"{self.pid}\n", mode=0o600)
 
     def poll(self):
         if self.handle is None:
@@ -218,7 +242,7 @@ class Supervisor:
                           log="vpn-controller.log")
             self.register("dnsmasq", ["dnsmasq", "--no-daemon",
                                       "--conf-file=" + str(self.state_dir / "dnsmasq.conf")],
-                          log="dnsmasq.log")
+                          log="dnsmasq.log", pid_file=self.state_dir / "dnsmasq.pid")
 
     def _sensitive(self, name):
         return name in ("controller", "dnsmasq", "guard", "microsocks", "privoxy")

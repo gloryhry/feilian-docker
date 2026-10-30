@@ -75,7 +75,7 @@ class Lab:
     def certificates(self):
         self.state.mkdir(mode=0o700, parents=True, exist_ok=False)
         commands = [
-            ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-sha256", "-days", "2", "-subj", "/CN=Feilian isolated test CA", "-keyout", str(self.state / "ca.key"), "-out", str(self.state / "ca.crt")],
+            ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-sha256", "-days", "2", "-subj", "/CN=Feilian isolated test CA", "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign", "-keyout", str(self.state / "ca.key"), "-out", str(self.state / "ca.crt")],
             ["openssl", "req", "-new", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=health.corp.test", "-keyout", str(self.state / "server.key"), "-out", str(self.state / "server.csr")],
             ["openssl", "x509", "-req", "-in", str(self.state / "server.csr"), "-CA", str(self.state / "ca.crt"), "-CAkey", str(self.state / "ca.key"), "-CAcreateserial", "-days", "2", "-sha256", "-extfile", str(self.state / "server.ext"), "-out", str(self.state / "server.crt")],
         ]

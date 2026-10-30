@@ -28,6 +28,7 @@ class FakeProcess:
         self.bottom = False
         self.failures = 0
         self.next_try = 0.0
+        self.pid_file = kwargs.get("pid_file")
         FakeProcess.instances.append(self)
 
     def alive(self):
@@ -180,6 +181,18 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(supervisor.data_plane, "closed")
         cleanup = [c.args[0] for c in supervisor._run_tool.call_args_list][-1]
         self.assertEqual(cleanup[2], "cleanup")
+
+    def test_dnsmasq_pid_file_is_published_for_the_dns_owner(self):
+        supervisor = self.supervisor()
+        supervisor._bootstrap_plan()
+        dnsmasq = supervisor.procs["dnsmasq"]
+        self.assertEqual(dnsmasq.pid_file, self.state / "dnsmasq.pid")
+        # dnsmasq --no-daemon does not create a pid file itself; the supervisor is
+        # the parent and must publish it or the DNS owner never activates.
+        sup._atomic_text(self.state / "dnsmasq.pid", "4242\n", mode=0o600)
+        self.assertEqual((self.state / "dnsmasq.pid").read_text(), "4242\n")
+        self.assertEqual((self.state / "dnsmasq.pid").stat().st_mode & 0o777, 0o600)
+        self.assertFalse(list(self.state.glob("*.part")))
 
     def test_runtime_state_is_atomic_and_records_processes(self):
         supervisor = self.supervisor()
