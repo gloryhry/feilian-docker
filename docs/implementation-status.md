@@ -89,7 +89,15 @@
       via-local-resolver: TimeoutError  ← dnsmasq 对 127.0.0.1:53 不回答（12s 超时）
       ```
   - 已排除的假设：dnsmasq 配置错误（文件内容正确）、dnsmasq 因 `@labtun0` 崩溃（单独容器用同一配置启动正常、不退出）、接口未就绪（窗口内接口存在且直连可用）。
-  - **下一轮决定性动作**：给生成的 dnsmasq 配置临时加 `log-queries`，确认它是否收到该查询、转发到哪个上游、以及出站是否被丢弃——这是目前唯一还没被证伪的环节。
+  - 已加 `FEILIAN_DNS_DEBUG=1` 时 dnsmasq 的 `--log-queries --log-facility=-`（默认关闭，隐私与日志量考虑）。追踪结果（`mock32`）：
+    ```
+    dnsmasq[61]: query[A] health.corp.test from 127.0.0.1
+    dnsmasq[61]: forwarded health.corp.test to 10.91.0.53
+    （重复转发 6 次，没有任何 “reply ... is ...” 行）
+    ```
+  - 中继侧日志证明**去程到达**：`{"kind":"dns","name":"health.corp.test","source":"10.254.0.1"}` 共 6 条。即丢包发生在**回程**。
+  - 已证伪：`bind-interfaces → bind-dynamic` 无效（`mock33`，已回退，不保留无证据改动）；用 `SO_BINDTODEVICE=labtun0` 手工构造的查询**能收到回包**（`via-corp-dns-bound: ok(50 bytes)`），说明设备绑定本身不是原因。
+  - **剩下的唯一疑点**：dnsmasq 进程的应答接收路径（其上游 socket 的源端口/源地址选择、或其自身的能力/降权行为），与手工 socket 不同。下一轮方向：在容器内以 `--log-queries --log-debug` 复现并对比 `ss -uanp` 下 dnsmasq 的 upstream socket 绑定，或改为“自管转发器 + dnsmasq 只做缓存”的兜底方案。
   - 修复两处阻断验收的真实缺陷：(1) 探针镜像构建沿用统一 `BUILD_NETWORK`（本机默认网络 DNS 被透明代理打断）；(2) 隔离容器 `--cap-drop ALL` 失去 `DAC_OVERRIDE` 后读不了属主不同的 0600 测试证书，仅对一次性测试 TLS 材料放宽为 0644（每轮独立隔离网络内的临时材料）。
 - **仍未执行**：L2 其余包级断言（代理经测试 TUN、guard 阻断、DNS 分域切换、网关 SNAT/MSS 真实包）、`scripts/deploy.sh` 的 digest 升级/回滚演练、README 重写。
 - Git 作者身份已配置；非交互 git push --dry-run 预检 exit 0，远端可接受目标功能分支。未实际推送。GitHub CLI 不存在，不因此安装系统工具。

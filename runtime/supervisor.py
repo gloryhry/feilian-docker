@@ -253,9 +253,14 @@ class Supervisor:
             self.register("controller", [sys.executable, str(self.runtime_dir / "vpn_state.py"),
                                         "run", "--state-dir", str(self.state_dir)],
                           log="vpn-controller.log")
-            self.register("dnsmasq", ["dnsmasq", "--no-daemon",
-                                      "--conf-file=" + str(self.state_dir / "dnsmasq.conf")],
-                          log="dnsmasq.log", pid_file=self.state_dir / "dnsmasq.pid")
+            dns_args = ["dnsmasq", "--no-daemon",
+                        "--conf-file=" + str(self.state_dir / "dnsmasq.conf")]
+            # Opt-in query tracing: off by default (privacy and volume), but the
+            # only way to see whether a resolver actually received/forwarded a query.
+            if self.env.get("FEILIAN_DNS_DEBUG", "0") == "1":
+                dns_args += ["--log-queries", "--log-facility=-"]
+            self.register("dnsmasq", dns_args, log="dnsmasq.log",
+                          pid_file=self.state_dir / "dnsmasq.pid")
 
     def _sensitive(self, name):
         return name in ("controller", "dnsmasq", "guard", "microsocks", "privoxy")

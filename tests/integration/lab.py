@@ -48,6 +48,25 @@ def query(name, server, timeout=12):
         s.close()
 
 print('servers-file:', open('/run/feilian/dnsmasq.servers').read().strip().replace(chr(10), ' | '))
+def query_bound(name, server, device, timeout=8):
+    tid = 0x4343
+    q = struct.pack('!HHHHHH', tid, 0x0100, 1, 0, 0, 0)
+    for label in name.split('.'):
+        q += bytes([len(label)]) + label.encode()
+    q += b'\x00' + struct.pack('!HH', 1, 1)
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.settimeout(timeout)
+    try:
+        s.setsockopt(socket.SOL_SOCKET, 25, device.encode() + b'\x00')  # SO_BINDTODEVICE
+        s.sendto(q, (server, 53))
+        data, _ = s.recvfrom(512)
+        return 'ok(%d bytes)' % len(data)
+    except Exception as exc:
+        return '%s: %s' % (type(exc).__name__, exc)
+    finally:
+        s.close()
+
+print('via-corp-dns-bound:', query_bound('health.corp.test', '10.91.0.53', 'labtun0'))
 print('via-local-resolver:', query('health.corp.test', '127.0.0.1'))
 print('via-corp-dns:', query('health.corp.test', '10.91.0.53'))
 try:
@@ -155,7 +174,7 @@ class Lab:
                "FEILIAN_TEST_OWNER": self.owner, "WEB_AUTH": "1", "WEB_TLS": "off", "WEB_BIND": "127.0.0.1",
                "START_NETWORKMANAGER": "0", "START_SERVICE": "1", "START_GUI": "1", "PROXY_BIND": "127.0.0.1"}
         if suite == "mock":
-            env.update(CORP_DOMAINS="corp.test", CORP_CIDRS=CORP, DNS_MODE="split", VPN_DNS_SOURCE="manual",
+            env.update(FEILIAN_DNS_DEBUG="1", CORP_DOMAINS="corp.test", CORP_CIDRS=CORP, DNS_MODE="split", VPN_DNS_SOURCE="manual",
                        VPN_DNS="10.91.0.53", VPN_IFACE="labtun0", VPN_PROBE_DNS_NAME="health.corp.test",
                        VPN_PROBE_URL="https://health.corp.test/health", VPN_PROBE_CA_FILE="/run/lab-ca.crt")
         else:
