@@ -20,7 +20,7 @@
 | G4 双代理/guard | IN_PROGRESS | 渲染器+单元测试；数据面未在隔离网络实跑。 |
 | G5 网关/MSS/清理 | IN_PROGRESS | 渲染器已实现；真实 SNAT/MSS 包级验收未做。 |
 | G6 CI/回滚 | IN_PROGRESS | check/client-release 工作流已落并通过 YAML 校验；未在远端运行。 |
-| G7 集成/GitHub/GHCR | BLOCKED (GHCR) | 分支已推送；GHCR 无凭据，发布未执行。 |
+| G7 集成/GitHub/GHCR | PUBLISHED | 分支 + 标签已推送；双架构镜像已发布到私有 GHCR 并按 digest 验证。 |
 
 ## 执行记录
 
@@ -44,8 +44,15 @@
 - **GHCR 发布门禁（仍未完成）**：YG 已在本地完成 `docker login ghcr.io`（`~/.docker/config.json` 出现 `ghcr.io` 条目，凭据未读取）。但三次 `docker push` 均在同一阶段失败：`failed commit on ref "layer-sha256:...": Put https://ghcr.io/v2/... net/http: timeout awaiting response headers`。已尝试拆小镜像层（apt 安装拆成 4 个 RUN，最大单层由 830MB 降到 751MB）后重推，仍在新的大 blob 上超时。结论：这是本机到 `ghcr.io` 的**上行链路超时**，不是层大小或凭据问题。
   - 可行路径 A：在 GitHub Actions 上构建并推送（`.github/workflows/client-release.yml` 已实现，需要先把工作流合入默认分支才可用 `workflow_dispatch`，并配置 `private-release` 受保护环境 + `vars.CLIENT_REDISTRIBUTION_APPROVED=true`）。
   - 可行路径 B：在带宽/代理更稳定的机器上用同一 tag 执行 `docker push`。
-  - 未伪造任何"已发布"结论；包当前仍为空（匿名 manifest 401）。
-- 尚未执行：管理网关鉴权+TLS 端到端（未生成秘密卷）、官方客户端真实登录/隧道、L2 包级防泄漏验收、ARM64 原生运行。
+  - 未伪造任何"已发布"结论。
+- **GHCR 发布已打通（本轮完成）**：本机大层上传受链路限制，改由 GitHub Actions 在**原生 runner** 上构建发布（`release-v*` 标签触发）。过程中用诊断分支定位到真实错误 `denied: permission_denied: write_package` —— 包先前由用户级 PAT 创建、未关联仓库；YG 在包设置中授予仓库访问后，CI 推送成功。
+  - 运行 `release-v3.2.16-r8362-r4`：`gate` / `build (amd64)` / `build (arm64)` / `index` 全部 **success**，两架构都在各自原生 runner 通过真实客户端**无账号冒烟**（supervisor health 退出 0）。
+  - 索引 digest `sha256:724a9177f96941590b8e420999fd3e9105d1357b6f9f8bdfb8f38000c3b28a36`；amd64 `sha256:43163c5e…`，arm64 `sha256:0a1eca3c…`。
+  - 私有性：`visibility=private`、已关联 `gloryhry/feilian-docker`；匿名 token/manifest 均 401。
+  - digest 拉取成功，标签核对 `schema=1 kind=official version=3.2.16`。
+  - 包内另有早期探针标签 `conn-probe-r1`，可按需删除。
+- 管理网关鉴权+TLS 端到端已实跑通过（临时秘密卷，用后删除）：未认证 401、认证后 200、后端仅 Unix socket。
+- **仍未执行（下一轮）**：L2 隔离网络包级验收（代理经测试 TUN、guard 阻断、DNS 分域切换、网关 SNAT/MSS 真实包）、`scripts/deploy.sh` 的 digest 升级/回滚演练、README 重写、`verify/` 与 `tests/integration/` 草稿（尚未提交）。
 - Git 作者身份已配置；非交互 git push --dry-run 预检 exit 0，远端可接受目标功能分支。未实际推送。GitHub CLI 不存在，不因此安装系统工具。
 - 旧 README 实测不自动当作新代码验收证据。
 
