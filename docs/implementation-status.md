@@ -118,7 +118,19 @@
     PASS cleanup.owned_resources                         ← 只清理 owned 资源
     FAIL mock.driver -> runtime_status_timeout
     ```
-  - 唯一剩余失败：`fault.interface_down` 之后套件把 `labtun0` 重新 up 并要求恢复 READY 时超时。下一轮定位“接口恢复后状态机能否重新收敛到 READY”。
+  - 接口恢复超时的根因是**夹具**：`ip link down` 时内核删除了经 tun 的路由，夹具只把 link up 却未恢复路由，于是产品正确地停在 `DISCONNECTED/route_probe_failed`。夹具补回 `ip route replace` 后恢复路径正常。
+  - **L2 结果（`mock50`）：14 项 PASS**
+    ```
+    PASS mock.kind / mock.waiting_auth / proxy.before_ready / mock.real_kernel_tun
+    PASS proxy.http / proxy.connect / proxy.socks5h
+    PASS dns.connected_split / dns.disconnected_no_public_fallback
+    PASS fault.interface_down / fault.route_withdrawn / fault.ipv6_literal
+    PASS cleanup.owned_resources / diag.data_plane_window
+    FAIL packets.no_plain_corporate_bootstrap      ← 真实失败，待修
+    NOT_IMPLEMENTED: gateway.snat / gateway.syn_mss / auth.tls_wss / fault.old_tcp
+                     / fault.controller_exit / dns.full_mode / cleanup.foreign_marker
+    ```
+    未实现的检查**如实标为 NOT_IMPLEMENTED 并计为失败**，没有被放过。
   - 修复两处阻断验收的真实缺陷：(1) 探针镜像构建沿用统一 `BUILD_NETWORK`（本机默认网络 DNS 被透明代理打断）；(2) 隔离容器 `--cap-drop ALL` 失去 `DAC_OVERRIDE` 后读不了属主不同的 0600 测试证书，仅对一次性测试 TLS 材料放宽为 0644（每轮独立隔离网络内的临时材料）。
 - **仍未执行**：L2 其余包级断言（代理经测试 TUN、guard 阻断、DNS 分域切换、网关 SNAT/MSS 真实包）、`scripts/deploy.sh` 的 digest 升级/回滚演练、README 重写。
 - Git 作者身份已配置；非交互 git push --dry-run 预检 exit 0，远端可接受目标功能分支。未实际推送。GitHub CLI 不存在，不因此安装系统工具。

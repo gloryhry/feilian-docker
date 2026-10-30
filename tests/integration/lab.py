@@ -307,6 +307,11 @@ class Lab:
         no_fallback = query.returncode != 0 and self.counter() == before_queries
         report.add("dns.disconnected_no_public_fallback", "PASS" if no_fallback else "FAIL", "no_bootstrap_corporate_query_or_stale_positive")
         self.driver.docker("exec", self.names["app"], "ip", "link", "set", "dev", "labtun0", "up")
+        # Bringing the link back up does NOT restore the route the kernel dropped
+        # while it was down; without this the harness would report the product as
+        # stuck even though the product is correctly waiting for a route.
+        self.driver.docker("exec", self.names["app"], "ip", "route", "replace", CORP,
+                           "via", "10.254.0.2", "dev", "labtun0")
         self.wait_status(True)
         self.driver.docker("exec", self.names["app"], "ip", "route", "del", CORP, "via", "10.254.0.2", "dev", "labtun0")
         self.wait_status(False)
