@@ -73,7 +73,7 @@ STATES = frozenset(("UNCONFIGURED", "WAITING_AUTH", "VALIDATING", "READY",
                     "DEGRADED", "DISCONNECTED", "DRAINING"))
 CODE = re.compile(r"[a-z][a-z0-9_]{0,95}\Z")
 IFACE = re.compile(r"[A-Za-z0-9_.-]{1,15}\Z")
-EVIDENCE_KEYS = frozenset(("interface", "vpn_ipv4", "dns_servers", "dns_source",
+EVIDENCE_KEYS = frozenset(("interface", "interface_ifindex", "vpn_ipv4", "dns_servers", "dns_source",
                            "dns_age_seconds", "dns_config_stale", "target_count", "https_status",
                            "success_count", "success_required", "dns_managed",
                            "dns_active", "dns_mode", "config_id"))
@@ -166,6 +166,11 @@ def valid_evidence(evidence):
                 return False
         elif key == "interface":
             if not isinstance(value, str) or not IFACE.fullmatch(value) or value == "lo":
+                return False
+        elif key == "interface_ifindex":
+            # Kernel interface index pins the DNS upstream binding across a
+            # same-name tunnel rebuild; None is allowed only when unobserved.
+            if value is not None and (type(value) is not int or not 1 <= value <= 2**31 - 1):
                 return False
         elif key == "config_id":
             if not isinstance(value, str) or not re.fullmatch(r"[a-f0-9]{64}", value):
@@ -745,7 +750,14 @@ class Controller:
             raise ProbeError("target_not_routed_via_vpn")
         addresses = self._interface(interface)
         self.tunnel_seen = True
-        evidence.update(interface=interface, vpn_ipv4=list(addresses))
+        ifindex = None
+        links = self._ip_json(["link", "show", "dev", interface])
+        if len(links) == 1 and isinstance(links[0], dict):
+            candidate = links[0].get("ifindex")
+            if type(candidate) is int and candidate > 0:
+                ifindex = candidate
+        evidence.update(interface=interface, vpn_ipv4=list(addresses),
+                        interface_ifindex=ifindex)
         for server in servers:
             if self._route(server)["dev"] != interface:
                 raise ProbeError("dns_not_routed_via_vpn")
@@ -805,8 +817,18 @@ class Controller:
             except (OSError, ValueError, TypeError, KeyError, AttributeError, DNSError):
                 state, reason = "DEGRADED", "probe_invalid_result"
         if self.config is not None and self.dns is not None:
+            # The DNS owner binds every VPN upstream to the observed tunnel
+            # interface and its kernel index, so a stale connection cannot resolve
+            # corporate names through the bootstrap route. Both are therefore
+            # required evidence on the connected path, not optional decoration.
+            interface = evidence.get("interface") if success else ""
+            ifindex = evidence.get("interface_ifindex") if success else None
+            if success and (not interface or type(ifindex) is not int or ifindex <= 0):
+                success, state, reason = False, "DEGRADED", "vpn_interface_inactive"
+                interface, ifindex = "", None
             try:
-                dns = self.dns.apply(success, servers, self.config.domains, self.config.dns_mode)
+                dns = self.dns.apply(success, servers, self.config.domains, self.config.dns_mode,
+                                     vpn_interface=interface or "", vpn_ifindex=ifindex)
                 evidence.update(dns_managed=dns["managed"], dns_active=dns["active"], dns_mode=dns["mode"])
                 if success and dns["managed"] and not dns["active"]:
                     success, state, reason = False, "DEGRADED", "dnsmasq_not_running"

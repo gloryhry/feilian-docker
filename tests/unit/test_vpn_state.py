@@ -53,7 +53,9 @@ class Runner:
         if args[2:4] == ["route", "get"]:
             value = [{"dev": self.route_devices.get(args[4], self.device), "prefsrc": self.source}]
         elif args[2:4] == ["link", "show"]:
-            value = [{"ifname": self.device, "flags": self.flags, "operstate": self.operstate,
+            # Real `ip -j link show` always reports the kernel index.
+            value = [{"ifname": self.device, "ifindex": 9, "flags": self.flags,
+                      "operstate": self.operstate,
                       "linkinfo": {"info_kind": self.kind}}]
         elif args[2:4] == ["address", "show"]:
             value = [{"ifname": self.device, "addr_info": self.addresses}]
@@ -96,7 +98,7 @@ class DNS:
         self.restored = 0
         self.closed = 0
 
-    def apply(self, connected, servers, domains, mode):
+    def apply(self, connected, servers, domains, mode, *, vpn_interface="", vpn_ifindex=None):
         self.calls.append((connected, servers, domains, mode))
         if self.failure:
             raise vpn.DNSError("do_not_log_secret_payload")

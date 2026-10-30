@@ -299,7 +299,9 @@ class Supervisor:
         return {
             "schema_version": 1, "project": self.env.get("PROJECT_NAME", "feilian"),
             "network_mode": self.mode, "ready": False, "vpn_interface": interface,
-            "vpn_ifindex": ifindex, "vpn_ipv4": [evidence.get("vpn_ipv4")] if evidence.get("vpn_ipv4") else [],
+            # evidence.vpn_ipv4 is already a bounded list; never nest it again.
+            "vpn_ipv4": [item for item in (evidence.get("vpn_ipv4") or [])
+                         if isinstance(item, str)],
             "vpn_dns": dns, "source_cidrs": [], "corp_cidrs": corp, "management_cidrs": [],
             "access_interface": self.env.get("ACCESS_INTERFACE", "eth0"),
             "bridge_gateway": self.env.get("BRIDGE_GATEWAY", ""), "macvlan_shim": False,
@@ -325,7 +327,16 @@ class Supervisor:
 
     def open_data_plane(self, status) -> None:
         context = self.context(status)
-        if not context["vpn_interface"] or not context["vpn_ifindex"]:
+        evidence = status.get("evidence") if isinstance(status.get("evidence"), dict) else {}
+        # A same-name tunnel rebuild invalidates index-based bindings, so the data
+        # plane refuses to open on a name alone.
+        ifindex = evidence.get("interface_ifindex")
+        if type(ifindex) is not int or ifindex <= 0:
+            try:
+                ifindex = socket.if_nametoindex(context["vpn_interface"])
+            except (OSError, ValueError):
+                ifindex = 0
+        if not context["vpn_interface"] or ifindex <= 0:
             self.notes.append("data_plane_missing_ifindex")
             return
         context["ready"] = True

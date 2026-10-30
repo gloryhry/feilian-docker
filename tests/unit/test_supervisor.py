@@ -126,7 +126,8 @@ class SupervisorTests(unittest.TestCase):
             "argv": ["/usr/bin/microsocks", "-q", "-i", "127.0.0.1", "-p", "1080",
                      "-b", "10.99.0.2"]}))
         supervisor.open_data_plane({"evidence": {"interface": "labvpn0",
-                                                 "vpn_ipv4": "10.99.0.2",
+                                                 "interface_ifindex": 9,
+                                                 "vpn_ipv4": ["10.99.0.2"],
                                                  "dns_servers": ["10.91.0.53"]}})
         self.assertEqual(supervisor.data_plane, "ready")
         self.assertEqual(supervisor.procs["microsocks"].user, "feilian-socks")
@@ -139,7 +140,7 @@ class SupervisorTests(unittest.TestCase):
         supervisor = self.supervisor()
         supervisor._bootstrap_plan()
         supervisor._run_tool = mock.Mock(return_value=(0, "{}"))
-        supervisor.open_data_plane({"evidence": {"interface": "ghost0", "vpn_ipv4": "10.99.0.2"}})
+        supervisor.open_data_plane({"evidence": {"interface": "ghost0", "vpn_ipv4": ["10.99.0.2"]}})
         self.assertEqual(supervisor.data_plane, "closed")
         self.assertIn("data_plane_missing_ifindex", supervisor.notes)
         supervisor._run_tool.assert_not_called()

@@ -55,7 +55,11 @@
 - **L2 隔离验收（进行中）**：`verify/all.sh --suite mock` 已能真实执行并产出结构化报告。当前：`mock.kind` PASS、`mock.waiting_auth` PASS（无可信隧道不进入 READY）、`proxy.before_ready` PASS（未就绪拒绝数据面）、`cleanup.owned_resources` PASS（只清理带 owner 的资源）；`mock.driver` 仍 FAIL 于 `runtime_status_timeout`，但每轮都在前移：
   1. 修掉**生产缺陷**：`dnsmasq --no-daemon` 不会自己写 pid 文件，DNS 属主因此永远判定未激活（`dns_active:false`，resolv 不切换）。改为由 supervisor 作为父进程原子发布 `/run/feilian/dnsmasq.pid`（0600），并补单元测试。修复后容器内实测 `dns_active:true`、`/etc/resolv.conf` 已切到 `nameserver 127.0.0.1`。
   2. 修掉**夹具缺陷**：测试 CA 缺少 `basicConstraints/keyUsage`，OpenSSL 3 拒绝（`CA cert does not include key usage extension`）——生产端严格校验是正确的，夹具补 `-addext` 后 TLS 链路可通。
-  3. 容器内直连验证：到 `10.91.0.80:443` 的 TLS 与绑源连接均成功，说明网络面已通；剩余超时点在探针/就绪判定，下一轮继续。
+  3. 容器内直连验证：到 `10.91.0.80:443` 的 TLS 与绑源连接均成功。
+  4. 修掉**控制器与 DNS 属主的接口断裂**：task-10 给 `DNSManager.apply` 加了 `vpn_interface/vpn_ifindex` 严格参数，`vpn_state.once()` 仍在用旧签名，于是每次成功探测后都被判 `dns_configuration_failed`。现在探针把 `evidence.interface_ifindex` 作为受控证据发布（含类型边界），`once()` 用它绑定 DNS 上游；同名隧道重建后旧绑定会被拒。修复后容器内实测 `https_status: 200`、`dns_active: true`。
+  5. 修掉**数据面 context 形状错误**：`vpn_ipv4` 被套成嵌套数组、还塞了模块不认识的 `vpn_ifindex`，导致 guard 直接拒收（`guard_apply_failed`）。改为按模块真实契约输出；索引改为 supervisor 侧开闸前置条件（`evidence.interface_ifindex` 或实际查询），模块暂不支持索引钉住，已记入待办。
+- **L2 当前结果**（`mock17`）：`mock.kind`、`mock.waiting_auth`、`proxy.before_ready`、`mock.real_kernel_tun`（真实内核 TUN + UDP 测试传输）、`fault.interface_down`（断隧道后无代理回落）、`dns.disconnected_no_public_fallback`、`cleanup.owned_resources` 均 **PASS**；`proxy.http/connect/socks5h`、`dns.connected_split` FAIL，`mock.driver` 报 `runtime_status_timeout`。
+  - 手动在容器内执行 `egress_policy.py apply` 与 `proxy_config.py prepare` 都返回 `status=READY`，说明两个模块本身可用；现场 `runtime.json` 显示 `data_plane: closed` 且最后一个 note 是 `readiness_lost`，即代理进程曾开启又被撤下 —— 下一轮从这里查 supervisor 的开合时序。
   - 修复两处阻断验收的真实缺陷：(1) 探针镜像构建沿用统一 `BUILD_NETWORK`（本机默认网络 DNS 被透明代理打断）；(2) 隔离容器 `--cap-drop ALL` 失去 `DAC_OVERRIDE` 后读不了属主不同的 0600 测试证书，仅对一次性测试 TLS 材料放宽为 0644（每轮独立隔离网络内的临时材料）。
 - **仍未执行**：L2 其余包级断言（代理经测试 TUN、guard 阻断、DNS 分域切换、网关 SNAT/MSS 真实包）、`scripts/deploy.sh` 的 digest 升级/回滚演练、README 重写。
 - Git 作者身份已配置；非交互 git push --dry-run 预检 exit 0，远端可接受目标功能分支。未实际推送。GitHub CLI 不存在，不因此安装系统工具。
