@@ -137,6 +137,33 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(commands[0][2], "apply")  # guard before config, then proxies
         self.assertEqual(commands[1][2], "prepare")
 
+    def test_repeated_open_failures_back_off(self):
+        supervisor = self.supervisor()
+        supervisor._bootstrap_plan()
+        supervisor._run_tool = mock.Mock(return_value=(1, ""))   # guard always fails
+        supervisor.open_data_plane({"evidence": {"interface": "labvpn0", "interface_ifindex": 9,
+                                                "vpn_ipv4": ["10.99.0.2"],
+                                                "dns_servers": ["10.91.0.53"]}})
+        first = supervisor._next_open_at
+        supervisor.open_data_plane({"evidence": {"interface": "labvpn0", "interface_ifindex": 9,
+                                                "vpn_ipv4": ["10.99.0.2"],
+                                                "dns_servers": ["10.91.0.53"]}})
+        self.assertGreater(supervisor._next_open_at, first)
+        self.assertEqual(supervisor._open_failures, 2)
+        # success clears it
+        supervisor._open_succeeded()
+        self.assertEqual(supervisor._next_open_at, 0.0)
+
+    def test_tick_skips_opening_until_the_backoff_expires(self):
+        supervisor = self.supervisor()
+        supervisor._bootstrap_plan()
+        supervisor._run_tool = mock.Mock(return_value=(1, ""))
+        self.write_vpn_status(state="READY", ready=True)
+        supervisor.tick()
+        calls = supervisor._run_tool.call_count
+        supervisor.tick()
+        self.assertEqual(supervisor._run_tool.call_count, calls)  # still backing off
+
     def test_listener_timeout_never_reports_ready(self):
         supervisor = self.supervisor()
         supervisor._bootstrap_plan()
@@ -250,6 +277,16 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual((self.state / "dnsmasq.pid").read_text(), "4242\n")
         self.assertEqual((self.state / "dnsmasq.pid").stat().st_mode & 0o777, 0o600)
         self.assertFalse(list(self.state.glob("*.part")))
+
+    def test_runtime_state_is_root_only(self):
+        supervisor = self.supervisor()
+        supervisor._bootstrap_plan()
+        supervisor.tick()
+        state = self.state / "runtime.json"
+        self.assertEqual(state.stat().st_mode & 0o777, 0o600)
+        context_file = self.root / "proxy" / "context.json"
+        supervisor._write_context({"project": "t", "schema_version": 1})
+        self.assertEqual(context_file.stat().st_mode & 0o777, 0o600)
 
     def test_runtime_state_is_atomic_and_records_processes(self):
         supervisor = self.supervisor()

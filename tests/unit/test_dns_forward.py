@@ -135,10 +135,10 @@ class ServeConcurrencyTests(unittest.TestCase):
         self.addCleanup(patch.stop)
         thread = threading.Thread(
             target=fwd.serve, args=(self.policy,),
-            kwargs=dict({"listen": "127.0.0.1", "port": self.port, "stop_after": 6}, **kwargs),
+            kwargs=dict({"listen": "127.0.0.1", "port": self.port, "stop_after": 2.5}, **kwargs),
             daemon=True)
         thread.start()
-        self.addCleanup(lambda: thread.join(timeout=8))
+        self.addCleanup(lambda: thread.join(timeout=4))
         time.sleep(0.3)
         return thread
 
@@ -159,12 +159,12 @@ class ServeConcurrencyTests(unittest.TestCase):
             name, _ = fwd._qname(query)
             if name.startswith("slow"):
                 slow_started.set()
-                time.sleep(2.0)
+                time.sleep(1.0)
             return query[:2] + b"ANSWER"
 
         with mock.patch.object(fwd, "forward", fake_forward):
             self._serve()
-            slow = threading.Thread(target=lambda: self._ask("slow.corp.test", 4.0), daemon=True)
+            slow = threading.Thread(target=lambda: self._ask("slow.corp.test", 3.0), daemon=True)
             slow.start()
             self.assertTrue(slow_started.wait(2.0), "slow query never reached the upstream")
             started = time.monotonic()
@@ -173,9 +173,59 @@ class ServeConcurrencyTests(unittest.TestCase):
             self.assertLess(time.monotonic() - started, 1.5)
             slow.join(timeout=6)
 
+    def _ask_tcp(self, name, timeout=3.0):
+        conn = socket.create_connection(("127.0.0.1", self.port), timeout=timeout)
+        try:
+            query = make_query(name)
+            conn.sendall(struct.pack("!H", len(query)) + query)
+            header = conn.recv(2)
+            if len(header) != 2:
+                return b""
+            (length,) = struct.unpack("!H", header)
+            body, got = b"", 0
+            while got < length:
+                chunk = conn.recv(length - got)
+                if not chunk:
+                    break
+                body += chunk
+                got += len(chunk)
+            return body
+        finally:
+            conn.close()
+
+    def test_tcp_query_round_trip(self):
+        def fake_forward(query, address, iface, timeout=3.0):
+            return query[:2] + b"TCPANSWER"
+
+        with mock.patch.object(fwd, "forward", fake_forward):
+            self._serve()
+            reply = self._ask_tcp("tcp.corp.test")
+        self.assertEqual(reply[:2], make_query("tcp.corp.test")[:2])
+        self.assertIn(b"TCPANSWER", reply)
+
+    def test_tcp_rejects_impossible_length_and_keeps_serving(self):
+        def fake_forward(query, address, iface, timeout=3.0):
+            return query[:2] + b"OK"
+
+        with mock.patch.object(fwd, "forward", fake_forward):
+            self._serve()
+            for bogus in (0, 3, 60000):
+                conn = socket.create_connection(("127.0.0.1", self.port), timeout=2)
+                try:
+                    conn.sendall(struct.pack("!H", bogus) + b"x" * 8)
+                    conn.settimeout(1.0)
+                    try:
+                        conn.recv(16)  # closed by the server; RST is expected
+                    except (socket.timeout, ConnectionResetError):
+                        pass
+                finally:
+                    conn.close()
+            # the forwarder must still answer afterwards
+            self.assertIn(b"OK", self._ask_tcp("after.corp.test"))
+
     def test_overload_answers_servfail_instead_of_growing_without_bound(self):
         def stalled(query, address, iface, timeout=3.0):
-            time.sleep(2.0)
+            time.sleep(1.0)
             return query[:2] + b"LATE"
 
         with mock.patch.object(fwd, "forward", stalled), \

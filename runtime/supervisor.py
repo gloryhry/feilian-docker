@@ -51,10 +51,10 @@ class SupervisorError(Exception):
     pass
 
 
-def _atomic_json(path: Path, data: dict) -> None:
+def _atomic_json(path: Path, data: dict, mode: int = 0o600) -> None:
     if path.is_symlink():
         raise SupervisorError("refusing symlinked runtime state")
-    path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(prefix=".runtime-", suffix=".part", dir=path.parent)
     temporary = Path(name)
     try:
@@ -63,7 +63,7 @@ def _atomic_json(path: Path, data: dict) -> None:
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
-        os.chmod(temporary, 0o644)
+        os.chmod(temporary, mode)
         os.replace(temporary, path)
         temporary = None
     finally:
@@ -223,8 +223,10 @@ class Supervisor:
         self.stop_requested = False
         self.draining = False
         self.data_plane = "closed"
-        self.controller_ready = False
         self.notes: list[str] = []
+        # A guard that keeps failing must not be re-applied every second.
+        self._open_failures = 0
+        self._next_open_at = 0.0
 
     # ------------------------------------------------------------- processes
     def register(self, name, argv, **kwargs):
@@ -234,7 +236,6 @@ class Supervisor:
         gui = self.env.get("GUI_MODE", "vnc")
         geometry = self.env.get("VNC_GEOMETRY", "1600x1000x24")
         vnc_port = self.env.get("VNC_PORT", "5900")
-        internal = self.env.get("NOVNC_INTERNAL_PORT", "6080")
         if self.env.get("START_SERVICE", "1") == "1":
             self.register("service", [str(APP_DIR / "corplink-service")],
                           log="corplink-service.log", required=True)
@@ -279,9 +280,6 @@ class Supervisor:
                         "--pid-file", str(self.state_dir / "dnsmasq.pid")]
             self.register("dnsmasq", dns_args, log="dns-forward.log",
                           pid_file=self.state_dir / "dnsmasq.pid")
-
-    def _sensitive(self, name):
-        return name in ("controller", "dnsmasq", "guard", "microsocks", "privoxy")
 
     def sync_processes(self):
         now = time.time()
@@ -404,6 +402,15 @@ class Supervisor:
             return 1, ""
         return result.returncode, result.stdout
 
+    def _open_failed(self, note: str) -> None:
+        self.notes.append(note)
+        self._open_failures += 1
+        self._next_open_at = time.time() + min(30.0, 2.0 ** min(self._open_failures, 5))
+
+    def _open_succeeded(self) -> None:
+        self._open_failures = 0
+        self._next_open_at = 0.0
+
     def open_data_plane(self, status) -> None:
         context = self.context(status)
         evidence = status.get("evidence") if isinstance(status.get("evidence"), dict) else {}
@@ -416,7 +423,7 @@ class Supervisor:
             except (OSError, ValueError):
                 ifindex = 0
         if not context["vpn_interface"] or ifindex <= 0:
-            self.notes.append("data_plane_missing_ifindex")
+            self._open_failed("data_plane_missing_ifindex")
             return
         context["ready"] = True
         path = self._write_context(context)
@@ -430,22 +437,23 @@ class Supervisor:
         egress = [sys.executable, str(self.runtime_dir / "egress_policy.py")]
         proxy = [sys.executable, str(self.runtime_dir / "proxy_config.py")]
         if self._run_tool(egress + ["apply", "--context", str(path)])[0]:
-            self.notes.append("guard_apply_failed")
+            self._open_failed("guard_apply_failed")
             return
         code, out = self._run_tool(proxy + ["prepare", "--context", str(path), "--state-dir", str(PROXY_DIR)])
         if code:
             self._run_tool(egress + ["close", "--context", str(path)])
-            self.notes.append("proxy_prepare_failed")
+            self._open_failed("proxy_prepare_failed")
             return
         try:
             metadata = json.loads(out)
             spec = json.loads((PROXY_DIR / "proxy" / "microsocks.json").read_text(encoding="utf-8"))
         except (ValueError, OSError):
             self._run_tool(egress + ["close", "--context", str(path)])
-            self.notes.append("proxy_config_unreadable")
+            self._open_failed("proxy_config_unreadable")
             return
         if metadata.get("status") != "READY":
             self._run_tool(egress + ["close", "--context", str(path)])
+            self._open_failed("proxy_not_ready")
             return
         self.register("microsocks", spec["argv"], user=SOCKS_USER, log="microsocks.log")
         self.register("privoxy", ["privoxy", "--no-daemon",
@@ -455,17 +463,18 @@ class Supervisor:
             try:
                 self.procs[name].start()
             except OSError:
-                self.notes.append(f"start_failed_{name}")
+                self._open_failed(f"start_failed_{name}")
                 self.close_data_plane(force_context=context)
                 return
         # Reporting READY before the listeners accept connections makes every
         # consumer see "connection refused" while the status says ready.
         if not self._await_listeners((context["socks_port"], context["http_port"])):
-            self.notes.append("proxy_listen_timeout")
+            self._open_failed("proxy_listen_timeout")
             self.close_data_plane(force_context=context)
             return
         self.data_plane = "ready"
         self.data_context = context
+        self._open_succeeded()
 
     def _await_listeners(self, ports, timeout: float = 15.0) -> bool:
         """Wait until both proxy ports accept a TCP connection."""
@@ -541,7 +550,7 @@ class Supervisor:
             status = self.vpn_status()
             ready = bool(status) and status.get("state") == "READY" and status.get("ready") is True
             self._record(ready, status)
-            if ready and self.data_plane != "ready":
+            if ready and self.data_plane != "ready" and time.time() >= self._next_open_at:
                 self.open_data_plane(status)
             elif not ready and self.data_plane == "ready":
                 self.notes.append("readiness_lost")

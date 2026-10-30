@@ -40,6 +40,9 @@ DEFAULT_TIMEOUT = 3.0
 # One stalled corporate resolver must not queue every other lookup behind it.
 MAX_WORKERS = 16
 MAX_INFLIGHT = 256
+# DNS over TCP (RFC 1035 §4.2.2) can carry far more than a UDP datagram.
+MAX_TCP_MESSAGE = 65535
+TCP_TIMEOUT = 5.0
 MAX_DEPTH = 16
 
 
@@ -192,6 +195,58 @@ def _answer(query: bytes, policy: dict) -> bytes:
     return reply or _servfail(query)
 
 
+def _recv_exact(sock, count: int):
+    """Read exactly `count` bytes, or return None on a short/closed stream."""
+    chunks, got = [], 0
+    while got < count:
+        chunk = sock.recv(count - got)
+        if not chunk:
+            return None
+        chunks.append(chunk)
+        got += len(chunk)
+    return b"".join(chunks)
+
+
+def _tcp_connection(conn, policy: dict) -> None:
+    """Serve one DNS-over-TCP exchange: 2-byte length prefix, then the message."""
+    try:
+        conn.settimeout(TCP_TIMEOUT)
+        header = _recv_exact(conn, 2)
+        if header is None:
+            return
+        (length,) = struct.unpack("!H", header)
+        if length < 12 or length > MAX_TCP_MESSAGE:
+            return
+        query = _recv_exact(conn, length)
+        if query is None or len(query) != length:
+            return
+        reply = _answer(query, policy)
+        if reply:
+            conn.sendall(struct.pack("!H", len(reply)) + reply)
+    except (OSError, struct.error):
+        pass
+    finally:
+        try:
+            conn.close()
+        except OSError:
+            pass
+
+
+def _tcp_accept_loop(tcp_sock, policy_box, pool, stopping) -> None:
+    tcp_sock.settimeout(0.5)
+    while not stopping["flag"]:
+        try:
+            conn, _ = tcp_sock.accept()
+        except socket.timeout:
+            continue
+        except OSError:
+            break
+        try:
+            pool.submit(_tcp_connection, conn, policy_box["policy"])
+        except RuntimeError:
+            conn.close()
+
+
 def serve(policy_path: Path, listen: str = "127.0.0.1", port: int = 53, stop_after=None,
           wait_for_policy: float = 60.0, workers: int = MAX_WORKERS):
     # The DNS owner renders the policy on its own schedule; starting before that
@@ -210,6 +265,20 @@ def serve(policy_path: Path, listen: str = "127.0.0.1", port: int = 53, stop_aft
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind((listen, port))
     server.settimeout(0.5)
+    # RFC 1035 requires TCP for truncated/large answers. A bind failure here is
+    # reported but must not take UDP down with it.
+    tcp_server = None
+    try:
+        tcp_server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        tcp_server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        tcp_server.bind((listen, port))
+        tcp_server.listen(16)
+    except OSError as exc:
+        print("dns forward: tcp listener unavailable (%s); udp only" % type(exc).__name__,
+              file=sys.stderr)
+        if tcp_server is not None:
+            tcp_server.close()
+        tcp_server = None
     stopping = {"flag": False}
     reloading = {"flag": False}
     inflight = {"count": 0}
@@ -246,6 +315,12 @@ def serve(policy_path: Path, listen: str = "127.0.0.1", port: int = 53, stop_aft
     # A single-threaded pool keeps the old serial behaviour available for tests
     # and for debugging a suspected ordering problem.
     pool = ThreadPoolExecutor(max_workers=max(1, workers), thread_name_prefix="dnsfwd")
+    policy_box = {"policy": policy}
+    tcp_thread = None
+    if tcp_server is not None:
+        tcp_thread = threading.Thread(target=_tcp_accept_loop, daemon=True,
+                                      args=(tcp_server, policy_box, pool, stopping))
+        tcp_thread.start()
     hard_deadline = time.time() + stop_after if stop_after else None
     try:
         while not stopping["flag"]:
@@ -261,6 +336,7 @@ def serve(policy_path: Path, listen: str = "127.0.0.1", port: int = 53, stop_aft
                 if reloading["flag"] or policy_path.stat().st_mtime != stamp:
                     reloading["flag"] = False
                     policy = load_policy(policy_path)  # new dict: older tasks keep theirs
+                    policy_box["policy"] = policy
                     stamp = policy_path.stat().st_mtime
             except OSError:
                 pass
@@ -282,8 +358,11 @@ def serve(policy_path: Path, listen: str = "127.0.0.1", port: int = 53, stop_aft
                 continue
             pool.submit(_work, query, peer, policy)
     finally:
+        stopping["flag"] = True
         pool.shutdown(wait=False, cancel_futures=True)
         server.close()
+        if tcp_server is not None:
+            tcp_server.close()
 
 
 def main(argv=None) -> int:
