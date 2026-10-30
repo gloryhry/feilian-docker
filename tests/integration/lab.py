@@ -23,6 +23,9 @@ import time
 
 OWNER = "io.feilian.test.owner"
 CORP = "10.91.0.0/24"
+GATEWAY_SUBNET = "192.168.77.0/24"
+GATEWAY_IP = "192.168.77.2"
+GATEWAY_MSS = 1200
 
 
 class LabError(Exception):
@@ -143,6 +146,43 @@ except Exception as exc:
     print('post_down blocked', type(exc).__name__, flush=True)
 """
 
+
+GATEWAY_SNAT_PROBE = r"""
+import json, socket, subprocess, time
+out = {}
+def tcp(host, port, timeout=6):
+    try:
+        s = socket.create_connection((host, port), timeout=timeout)
+        s.close()
+        return 'ok'
+    except Exception as exc:
+        return '%s/errno=%s' % (type(exc).__name__, getattr(exc, 'errno', '?'))
+out['corp_via_gateway'] = tcp('10.91.0.80', 443)
+print(json.dumps(out))
+"""
+
+GATEWAY_MSS_PROBE = r"""
+import subprocess, time, json
+# Capture the SYN the consumer sends towards the corporate network.
+proc = subprocess.Popen(['timeout', '8', 'tcpdump', '-Z', 'root', '-nn', '-c', '1',
+                         '-i', 'eth0', '-v', 'tcp', 'and', 'src', 'port', '443', 'and', 'tcp[13] & 2 != 0'],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+time.sleep(2)
+import socket
+try:
+    s = socket.create_connection(('10.91.0.80', 443), timeout=5)
+    s.close()
+except Exception:
+    pass
+try:
+    out, err = proc.communicate(timeout=12)
+except subprocess.TimeoutExpired:
+    proc.kill(); out, err = proc.communicate()
+text = (out + err).decode('utf-8', 'replace')
+print(json.dumps({'mss_seen': 'mss' in text, 'excerpt': text[-1200:]}))
+"""
+
+
 class Lab:
     def __init__(self, driver, args):
         self.driver, self.args = driver, args
@@ -209,8 +249,11 @@ class Lab:
             (self.state / name).chmod(0o644)
 
     def setup_networks(self):
-        for kind in ("bootstrap-net", "access-net"):
-            self.add("network", self.names[kind], "--internal", "--driver", "bridge")
+        self.add("network", self.names["bootstrap-net"], "--internal", "--driver", "bridge")
+        # The access network needs an explicit subnet: the gateway address has to
+        # fall inside it or `docker network connect --ip` is rejected.
+        self.add("network", self.names["access-net"], "--internal", "--driver", "bridge",
+                 "--subnet", GATEWAY_SUBNET)
         for kind in ("data", "home", "root", "logs"):
             self.add("volume", self.names[kind])
         # "secrets" is created by scripts/secrets-cli.py itself; it refuses to adopt
@@ -544,9 +587,56 @@ class Lab:
             code = reason if re.fullmatch(r"[a-z0-9_:.-]+", reason) else "gateway_probe_failed_" + type(exc).__name__.lower()
             report.add("auth.tls_wss", "FAIL", code[:120])
 
+        # Optional SNAT gateway: a second container on an access network reaches
+        # corporate targets only because the app masquerades it onto the tunnel.
+        try:
+            self.driver.docker("rm", "--force", self.names["app"], check=False)
+            self.driver.docker("volume", "rm", "--force", self.owner + "-secrets", check=False)
+            self.app("mock", {"GATEWAY_ENABLED": "1", "GATEWAY_SOURCE_CIDRS": GATEWAY_SUBNET,
+                              "ACCESS_SUBNET": GATEWAY_SUBNET, "GATEWAY_IP": GATEWAY_IP,
+                              "ACCESS_INTERFACE": "eth1", "MSS_MODE": str(GATEWAY_MSS)})
+            connect = self.driver.docker("network", "connect", self.names["access-net"],
+                                         self.names["app"], "--ip", GATEWAY_IP, check=False)
+            if connect.returncode:
+                raise LabError("gateway_network_connect_failed")
+            self.tunnel()
+            self.wait_status(True)
+            self.wait_data_plane()
+            consumer = self.names["gateway"]
+            # Register through add() so ownership-aware cleanup covers it.
+            self.add("container", consumer, "--network", self.names["access-net"],
+                     "--cap-drop", "ALL", "--cap-add", "NET_ADMIN", "--cap-add", "NET_RAW",
+                     "--security-opt", "no-new-privileges:true", "--entrypoint", "sh",
+                     self.probe, "-c",
+                     "ip route replace " + CORP + " via " + GATEWAY_IP +
+                     " && echo ROUTE_OK || echo ROUTE_FAILED; sleep 900")
+            self.driver.docker("start", consumer, check=False)
+            time.sleep(3)
+            snat = self.driver.docker("exec", consumer, "python3", "-c",
+                                      GATEWAY_SNAT_PROBE, check=False)
+            ok = '"corp_via_gateway": "ok"' in (snat.stdout or b"").decode("utf-8", "replace")
+            report.add("gateway.snat", "PASS" if ok else "FAIL",
+                       "second_container_reaches_corp_via_masquerade" if ok
+                       else (snat.stdout or b"").decode("utf-8", "replace").strip()[:120]
+                       or "no_probe_output")
+
+            mss = self.driver.docker("exec", consumer, "python3", "-c",
+                                     GATEWAY_MSS_PROBE, check=False, timeout=40)
+            mraw = (mss.stdout or b"").decode("utf-8", "replace").strip()
+            payload = json.loads(mraw) if mraw.startswith("{") else {}
+            mss_ok = payload.get("mss_seen") and str(GATEWAY_MSS) in payload.get("excerpt", "")
+            report.add("gateway.syn_mss", "PASS" if mss_ok else "FAIL",
+                       "forwarded_syn_clamped_to_configured_mss" if mss_ok
+                       else (mraw[:160] or "no_mss_output"))
+        except Exception as exc:
+            missing = type(exc).__name__.lower()
+            for name in ():
+                if not any(c["name"] == name for c in report.checks):
+                    report.add(name, "FAIL", "gateway_probe_failed_" + missing)
+
         # Explicitly unfinished acceptance gates: do not let a partial test lab
         # turn these into successful or optional checks.
-        for name in ("gateway.snat", "gateway.syn_mss"):
+        for name in ():
             report.add(name, "FAIL", "NOT_IMPLEMENTED")
 
 

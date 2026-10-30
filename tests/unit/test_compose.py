@@ -42,6 +42,23 @@ class ComposeContractTests(unittest.TestCase):
         self.assertNotIn("VNC_PASSWORD", service["environment"])
         return service
 
+    def test_enterprise_runtime_config_is_actually_passed_to_the_container(self):
+        # Losing any of these silently disables the data plane in a real compose
+        # deployment while the lab (which passes -e directly) still looks green.
+        required = ("PROJECT_NAME", "CORP_DOMAINS", "CORP_CIDRS", "DNS_MODE",
+                    "VPN_DNS_SOURCE", "VPN_DNS", "VPN_CONFIG_FILE", "VPN_IFACE",
+                    "VPN_PROBE_DNS_NAME", "VPN_PROBE_URL", "VPN_PROBE_CA_FILE",
+                    "PROXY_ENABLED", "PROXY_REQUIRE_VPN", "PROXY_BIND",
+                    "PROXY_CONNECT_PORTS", "HTTP_PROXY_INTERNAL_PORT",
+                    "SOCKS_PROXY_INTERNAL_PORT", "ACCESS_INTERFACE", "GUARD_ENABLED",
+                    "GATEWAY_ENABLED", "GATEWAY_SOURCE_CIDRS", "ACCESS_SUBNET",
+                    "GATEWAY_IP", "MSS_MODE")
+        for filename in ("compose.yaml", "compose.host.yaml", "compose.macvlan.yaml"):
+            with self.subTest(file=filename):
+                env = self.assert_common(self.render(filename))["environment"]
+                missing = [key for key in required if key not in env]
+                self.assertEqual(missing, [], f"{filename} does not pass {missing}")
+
     def test_bridge_only_publishes_loopback_gui_and_owned_external_network(self):
         config = self.render("compose.yaml")
         service = self.assert_common(config)

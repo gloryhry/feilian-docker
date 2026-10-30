@@ -163,7 +163,12 @@
   - 修正后 `auth.tls_wss` **通过**（`mock70`）：未认证 **401**、认证后 **200**、`/websockify` 升级 **101**，全部在真实 TLS + Basic Auth 下验证。
   - 至此 **L2：19 项 PASS / 3 项 NOT_IMPLEMENTED**（`gateway.snat`、`gateway.syn_mss`、`fault.old_tcp`）。
   - 随后补齐 `fault.old_tcp` 并通过（`mock74`）：在数据面开启窗口内建立 SOCKS5 连接，探针自行把 `labtun0` down，再尝试写入；实测得到 **立即 EOF（0 字节）**——连接被拆除、数据无法续传。判定同时接受“抛异常”与“零字节 EOF”两种 fail-closed 表现。
-  - **L2 当前（`mock74`）：20 项 PASS / 2 项 NOT_IMPLEMENTED**（`gateway.snat`、`gateway.syn_mss`）。
+  - 补齐可选 SNAT 网关与 MSS，过程中发现并修掉**三个真实缺陷**：
+    1. `supervisor.context()` 只传了 `gateway.enabled`，缺少 `source_cidrs`/`access_subnet`/`gateway_ipv4`/`mss` —— 策略模块会拒绝该上下文，**已启用的网关会静默地不产生任何 SNAT/MSS 链**。现按完整契约转发。
+    2. **compose 根本没有把企业网络配置传进容器**（`CORP_*`/`VPN_*`/`DNS_*`/`PROXY_*`/`GATEWAY_*`/`MSS_MODE`/`GUARD_ENABLED` 全缺）。L2 一直是绿的，因为实验室直接 `-e` 传参，绕过了 compose。三个 compose 已补齐，并加了契约测试防止回归。
+    3. 容器内 **`ip_forward` 从未被打开**，网关的 SNAT/MSS 因此匹配不到任何转发包（实测 `errno=101 ENETUNREACH`）。现在仅在网关启用时于容器自己的 netns 打开。
+  - 夹具侧另修两处：`access-net` 未定义 subnet 导致 `docker network connect --ip` 被拒（app 根本没有 eth1）；MSS 探针原先抓**出方向** SYN（看到的是未修改值），改为抓**回程 SYN-ACK**——clamp 实际作用于回程。
+  - **L2 当前（`mock79`）：22 项 PASS，零 NOT_IMPLEMENTED。**
   - 该路径在**手工验证**中曾通过（临时项目 `fl-e2e`：未认证 401、认证后 200、后端仅 Unix socket），但手工验证不算 L2，不计入验收。
 
 ## 外部门禁

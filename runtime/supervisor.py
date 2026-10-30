@@ -347,7 +347,32 @@ class Supervisor:
             "http_port": int(self.env.get("HTTP_PROXY_INTERNAL_PORT", "8118")),
             "socks_port": int(self.env.get("SOCKS_PROXY_INTERNAL_PORT", "1080")),
             "connect_ports": [int(item) for item in self.env.get("PROXY_CONNECT_PORTS", "443").split(",") if item],
-            "gateway": {"enabled": self.env.get("GATEWAY_ENABLED", "0") == "1"},
+            "gateway": self._gateway_context(),
+        }
+
+    def _gateway_context(self) -> dict:
+        """Forward the whole gateway contract, not just the on/off flag.
+
+        Sending only `enabled` made the policy modules reject the context (they
+        require sources/subnet/address), so an enabled gateway silently produced
+        a guard with no SNAT or MSS chain at all.
+        """
+        def split(key):
+            raw = self.env.get(key, "") or ""
+            return [item for item in raw.split(",") if item]
+
+        mss = (self.env.get("MSS_MODE", "off") or "off").strip()
+        if mss not in ("off", "auto"):
+            try:
+                mss = int(mss)
+            except ValueError:
+                mss = "off"
+        return {
+            "enabled": self.env.get("GATEWAY_ENABLED", "0") == "1",
+            "source_cidrs": split("GATEWAY_SOURCE_CIDRS"),
+            "access_subnet": self.env.get("ACCESS_SUBNET", "") or "",
+            "gateway_ipv4": self.env.get("GATEWAY_IP", "") or "",
+            "mss": mss,
         }
 
     def _write_context(self, context) -> Path:
@@ -380,6 +405,13 @@ class Supervisor:
             return
         context["ready"] = True
         path = self._write_context(context)
+        if context["gateway"]["enabled"]:
+            # Forwarding lives in this container's own netns only. Without it the
+            # SNAT/MSS chains match nothing and the gateway silently blackholes.
+            try:
+                Path("/proc/sys/net/ipv4/ip_forward").write_text("1\n", encoding="ascii")
+            except OSError:
+                self.notes.append("ip_forward_unavailable")
         egress = [sys.executable, str(self.runtime_dir / "egress_policy.py")]
         proxy = [sys.executable, str(self.runtime_dir / "proxy_config.py")]
         if self._run_tool(egress + ["apply", "--context", str(path)])[0]:

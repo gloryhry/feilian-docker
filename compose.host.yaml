@@ -50,6 +50,31 @@ services:
       DNS_MODE: "off"
       GUARD_ENABLED: "0"
       GATEWAY_ENABLED: "0"
+      MSS_MODE: "off"
+      PROJECT_NAME: ${PROJECT_NAME:-feilian}
+      # --- enterprise network intent (empty means "not configured", never faked) ---
+      CORP_DOMAINS: ${CORP_DOMAINS:-}
+      CORP_CIDRS: ${CORP_CIDRS:-}
+      VPN_DNS_SOURCE: ${VPN_DNS_SOURCE:-file}
+      VPN_DNS: ${VPN_DNS:-}
+      VPN_CONFIG_FILE: ${VPN_CONFIG_FILE:-/opt/apps/com.volcengine.feilian/files/vpn.conf}
+      VPN_IFACE: ${VPN_IFACE:-auto}
+      VPN_PROBE_DNS_NAME: ${VPN_PROBE_DNS_NAME:-}
+      VPN_PROBE_URL: ${VPN_PROBE_URL:-}
+      VPN_PROBE_EXPECT_STATUS: ${VPN_PROBE_EXPECT_STATUS:-200}
+      VPN_PROBE_CA_FILE: ${VPN_PROBE_CA_FILE:-}
+      # --- data plane ---
+      PROXY_REQUIRE_VPN: ${PROXY_REQUIRE_VPN:-1}
+      PROXY_BIND: ${PROXY_BIND:-127.0.0.1}
+      PROXY_SOURCE_CIDRS: ${PROXY_SOURCE_CIDRS:-}
+      PROXY_CONNECT_PORTS: ${PROXY_CONNECT_PORTS:-443}
+      HTTP_PROXY_INTERNAL_PORT: ${HTTP_PROXY_INTERNAL_PORT:-8118}
+      SOCKS_PROXY_INTERNAL_PORT: ${SOCKS_PROXY_INTERNAL_PORT:-1080}
+      ACCESS_INTERFACE: ${ACCESS_INTERFACE:-eth0}
+      # --- optional SNAT gateway / MSS ---
+      GATEWAY_SOURCE_CIDRS: ${GATEWAY_SOURCE_CIDRS:-}
+      ACCESS_SUBNET: ${ACCESS_SUBNET:-}
+      GATEWAY_IP: ${GATEWAY_IP:-}
       START_NETWORKMANAGER: ${START_NETWORKMANAGER:-0}
       START_SERVICE: ${START_SERVICE:-1}
       START_GUI: ${START_GUI:-1}
