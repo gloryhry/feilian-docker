@@ -59,7 +59,19 @@
   4. 修掉**控制器与 DNS 属主的接口断裂**：task-10 给 `DNSManager.apply` 加了 `vpn_interface/vpn_ifindex` 严格参数，`vpn_state.once()` 仍在用旧签名，于是每次成功探测后都被判 `dns_configuration_failed`。现在探针把 `evidence.interface_ifindex` 作为受控证据发布（含类型边界），`once()` 用它绑定 DNS 上游；同名隧道重建后旧绑定会被拒。修复后容器内实测 `https_status: 200`、`dns_active: true`。
   5. 修掉**数据面 context 形状错误**：`vpn_ipv4` 被套成嵌套数组、还塞了模块不认识的 `vpn_ifindex`，导致 guard 直接拒收（`guard_apply_failed`）。改为按模块真实契约输出；索引改为 supervisor 侧开闸前置条件（`evidence.interface_ifindex` 或实际查询），模块暂不支持索引钉住，已记入待办。
 - **L2 当前结果**（`mock17`）：`mock.kind`、`mock.waiting_auth`、`proxy.before_ready`、`mock.real_kernel_tun`（真实内核 TUN + UDP 测试传输）、`fault.interface_down`（断隧道后无代理回落）、`dns.disconnected_no_public_fallback`、`cleanup.owned_resources` 均 **PASS**；`proxy.http/connect/socks5h`、`dns.connected_split` FAIL，`mock.driver` 报 `runtime_status_timeout`。
-  - 手动在容器内执行 `egress_policy.py apply` 与 `proxy_config.py prepare` 都返回 `status=READY`，说明两个模块本身可用；现场 `runtime.json` 显示 `data_plane: closed` 且最后一个 note 是 `readiness_lost`，即代理进程曾开启又被撤下 —— 下一轮从这里查 supervisor 的开合时序。
+  - 手动在容器内执行 `egress_policy.py apply` 与 `proxy_config.py prepare` 都返回 `status=READY`，说明两个模块本身可用。
+  - 为定位时序，给 supervisor 增加**有界状态迁移追踪**（`runtime.json.transitions`，最多 10 条，只含 ready/plane/state/reason/时间戳，不含敏感信息）。实测（`mock19`）：
+    ```
+    t0    plane=closed ready=False state=WAITING_AUTH  reason=route_probe_failed
+    t+5   plane=closed ready=False state=VALIDATING    reason=success_threshold_pending
+    t+10  plane=closed ready=True  state=READY         reason=all_probes_passed
+    t+12  plane=ready  ready=True  state=READY         reason=all_probes_passed
+    t+20  plane=ready  ready=False state=DISCONNECTED  reason=route_probe_failed
+    t+23  plane=closed ready=False state=DISCONNECTED  reason=route_probe_failed
+    ```
+    即：READY 后约 2 秒打开数据面，约 8 秒后因 `route_probe_failed` 掉到 DISCONNECTED 并撤下 —— 该时间点与套件自身的 `labtun0 down` 故障注入吻合，属于**预期的 fail-closed**；但代理 curl 断言恰好落在这段窗口内失败（三发 `--max-time 6`）。
+  - 已核对 guard 规则只匹配 `meta skuid {1001,1002}`，root（dnsmasq 的 VPN DNS 出站、控制面探测）不受影响，因此 DNS 被误封的假设不成立。
+  - 下一轮：确认数据面开启与套件首次代理请求之间代理进程是否已就绪（`open_data_plane` 注册进程后要等下一个 tick 才启动），据此决定是修正时序还是让断言等待就绪信号。
   - 修复两处阻断验收的真实缺陷：(1) 探针镜像构建沿用统一 `BUILD_NETWORK`（本机默认网络 DNS 被透明代理打断）；(2) 隔离容器 `--cap-drop ALL` 失去 `DAC_OVERRIDE` 后读不了属主不同的 0600 测试证书，仅对一次性测试 TLS 材料放宽为 0644（每轮独立隔离网络内的临时材料）。
 - **仍未执行**：L2 其余包级断言（代理经测试 TUN、guard 阻断、DNS 分域切换、网关 SNAT/MSS 真实包）、`scripts/deploy.sh` 的 digest 升级/回滚演练、README 重写。
 - Git 作者身份已配置；非交互 git push --dry-run 预检 exit 0，远端可接受目标功能分支。未实际推送。GitHub CLI 不存在，不因此安装系统工具。

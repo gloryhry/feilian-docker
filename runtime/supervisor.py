@@ -407,16 +407,33 @@ class Supervisor:
             "processes": {name: {"pid": proc.pid, "alive": proc.alive(), "required": proc.required}
                           for name, proc in sorted(self.procs.items())},
             "notes": self.notes[-20:],
+            "transitions": getattr(self, "transitions", [])[-10:],
         }
 
     def publish_state(self) -> None:
         _atomic_json(self.state_dir / "runtime.json", self.state_snapshot())
+
+    def _record(self, ready, status) -> None:
+        """Keep a short, bounded transition trace: invaluable when the data plane
+        opens and immediately closes without a visible reason in the logs."""
+        current = {"ready": bool(ready), "plane": self.data_plane,
+                   "state": (status or {}).get("state"),
+                   "reason": (status or {}).get("reason")}
+        if current == getattr(self, "_last", None):
+            return
+        self._last = current
+        trace = getattr(self, "transitions", None)
+        if trace is None:
+            trace = self.transitions = []
+        trace.append(dict(current, t=round(time.time())))
+        del trace[:-10]
 
     def tick(self) -> None:
         self.sync_processes()
         if self.managed and not self.draining:
             status = self.vpn_status()
             ready = bool(status) and status.get("state") == "READY" and status.get("ready") is True
+            self._record(ready, status)
             if ready and self.data_plane != "ready":
                 self.open_data_plane(status)
             elif not ready and self.data_plane == "ready":
