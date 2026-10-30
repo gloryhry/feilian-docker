@@ -70,8 +70,10 @@ class ProxyConfigTests(unittest.TestCase):
         result = self.render()
         self.assertEqual(set(result["source_cidrs"]), {"127.0.0.1/32", "172.30.0.1/32"})
         config = result["files"]["privoxy.conf"]
-        self.assertIn("deny-access 0.0.0.0/0", config)
-        self.assertIn("permit-access 172.30.0.1/32", config)
+        # Privoxy applies the first matching access rule, so the catch-all deny
+        # must come last or every permitted source is refused.
+        self.assertLess(config.index("permit-access 172.30.0.1/32"),
+                        config.index("deny-access 0.0.0.0/0"))
         self.assertNotIn("permit-access 172.30.0.0/24", config)
         self.assertEqual(self.render(bridge_gateway="")["source_cidrs"], ["127.0.0.1/32"])
 

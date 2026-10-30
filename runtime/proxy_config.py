@@ -270,7 +270,9 @@ def render_configs(context: dict[str, Any], state_dir: Path = Path("/run/feilian
         header, f"listen-address {context['listen_ipv4']}:{context['http_port']}",
         "toggle 1", "enable-remote-toggle 0", "enable-remote-http-toggle 0", "enable-edit-actions 0",
         "enforce-blocks 1", "accept-intercepted-requests 0", "debug 0",
-        "deny-access 0.0.0.0/0", *[f"permit-access {source}" for source in sources],
+        # Privoxy matches access rules first-to-last: permits MUST precede the
+        # catch-all deny, otherwise every client (including loopback) is refused.
+        *[f"permit-access {source}" for source in sources], "deny-access 0.0.0.0/0",
         f"actionsfile {state_dir / 'proxy' / 'feilian.action'}",
         f"forward-socks5t / 127.0.0.1:{context['socks_port']} .",
     ]

@@ -18,6 +18,7 @@ for key, name in (("runtime", "runtime.json"), ("vpn", "status.json")):
     except (OSError, ValueError):
         pass
 runtime = result["runtime"]
+result["data_plane"] = (runtime or {}).get("data_plane")
 if runtime:
     try:
         result["runtime_live"] = time.time() - float(runtime.get("updated_at", 0)) <= 45
@@ -30,6 +31,7 @@ if vpn:
     except (TypeError, ValueError):
         fresh = False
     result["vpn_ready"] = bool(fresh and vpn.get("ready") is True and vpn.get("state") == "READY")
+result["proxy_usable"] = result["vpn_ready"] and result.get("data_plane") == "ready"
 print(json.dumps(result, indent=2, sort_keys=True))
 raise SystemExit(0 if result["runtime_live"] else 1)
 PY

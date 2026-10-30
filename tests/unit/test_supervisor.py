@@ -125,6 +125,7 @@ class SupervisorTests(unittest.TestCase):
         (prepared / "microsocks.json").write_text(json.dumps({
             "argv": ["/usr/bin/microsocks", "-q", "-i", "127.0.0.1", "-p", "1080",
                      "-b", "10.99.0.2"]}))
+        supervisor._await_listeners = lambda ports, timeout=15.0: True
         supervisor.open_data_plane({"evidence": {"interface": "labvpn0",
                                                  "interface_ifindex": 9,
                                                  "vpn_ipv4": ["10.99.0.2"],
@@ -135,6 +136,20 @@ class SupervisorTests(unittest.TestCase):
         commands = [call.args[0] for call in supervisor._run_tool.call_args_list]
         self.assertEqual(commands[0][2], "apply")  # guard before config, then proxies
         self.assertEqual(commands[1][2], "prepare")
+
+    def test_listener_timeout_never_reports_ready(self):
+        supervisor = self.supervisor()
+        supervisor._bootstrap_plan()
+        supervisor._run_tool = mock.Mock(return_value=(0, json.dumps({"status": "READY"})))
+        prepared = self.root / "proxy" / "proxy"
+        prepared.mkdir(parents=True)
+        (prepared / "microsocks.json").write_text(json.dumps({"argv": ["/usr/bin/microsocks"]}))
+        supervisor._await_listeners = lambda ports, timeout=15.0: False
+        supervisor.open_data_plane({"evidence": {"interface": "labvpn0", "interface_ifindex": 9,
+                                                "vpn_ipv4": ["10.99.0.2"],
+                                                "dns_servers": ["10.91.0.53"]}})
+        self.assertEqual(supervisor.data_plane, "closed")
+        self.assertIn("proxy_listen_timeout", supervisor.notes)
 
     def test_missing_ifindex_keeps_data_plane_closed(self):
         supervisor = self.supervisor()

@@ -136,6 +136,21 @@ class Lab:
             self.driver.docker("cp", str(self.driver.root / "tests/fixtures/integration/tun.py"), self.names["app"] + ":/run/lab-tun.py")
         self.driver.docker("start", self.names["app"])
 
+    def wait_data_plane(self, timeout=45):
+        """VPN READY does not mean the proxies accept connections yet; the
+        supervisor opens the data plane afterwards and publishes data_plane."""
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            try:
+                state = json.loads(self.driver.docker(
+                    "exec", self.names["app"], "cat", "/run/feilian/runtime.json").stdout)
+                if state.get("data_plane") == "ready":
+                    return
+            except Exception:
+                pass
+            time.sleep(0.5)
+        raise LabError("data_plane_timeout")
+
     def wait_status(self, ready, timeout=90):
         end = time.monotonic() + timeout
         while time.monotonic() < end:
@@ -158,7 +173,12 @@ class Lab:
         args = ["exec", self.names["consumer"], "curl", "--silent", "--show-error", "--fail", "--noproxy", "",
                 "--max-time", "6", "--proxy", proxy, "--cacert", "/labstate/ca.crt", url]
         result = self.driver.docker(*args, timeout=12, check=False)
-        return (result.returncode == 0 and b"CORP_TEST_ONLY" in result.stdout) if expected else result.returncode != 0
+        # Keep the reason so a FAIL row is diagnosable instead of a bare boolean.
+        self.last_curl = " ".join(
+            part for part in (str(result.returncode), result.stderr.decode("utf-8", "replace").strip()[:160]) if part)
+        if expected:
+            return result.returncode == 0 and b"CORP_TEST_ONLY" in result.stdout
+        return result.returncode != 0
 
     def tunnel(self):
         app, relay = self.ip("app"), self.ip("relay")
@@ -191,13 +211,18 @@ class Lab:
         self.capture()
         self.tunnel()
         ready = self.wait_status(True)
+        self.wait_data_plane()
         report.add("mock.real_kernel_tun", "PASS" if ready.get("evidence", {}).get("interface") == "labtun0" else "FAIL", "test_udp_transport_not_official_vpn")
         for name, proxy, url in (("http", "http://127.0.0.1:8118", "http://health.corp.test/health"),
                                  ("connect", "http://127.0.0.1:8118", "https://health.corp.test/health"),
                                  ("socks5h", "socks5h://127.0.0.1:1080", "https://health.corp.test/health")):
-            report.add("proxy." + name, "PASS" if self.curl(proxy, url) else "FAIL", "internal_target_marker_and_verified_ca")
+            passed = self.curl(proxy, url)
+            report.add("proxy." + name, "PASS" if passed else "FAIL",
+                       "internal_target_marker_and_verified_ca" if passed else "curl=" + getattr(self, "last_curl", "?"))
         query = self.driver.docker("exec", self.names["app"], "getent", "ahostsv4", "health.corp.test", check=False)
-        report.add("dns.connected_split", "PASS" if query.returncode == 0 and b"10.91.0.80" in query.stdout else "FAIL", "corporate_dns_via_tunnel")
+        split_ok = query.returncode == 0 and b"10.91.0.80" in query.stdout
+        report.add("dns.connected_split", "PASS" if split_ok else "FAIL",
+                   "corporate_dns_via_tunnel" if split_ok else "getent=" + query.stderr.decode("utf-8", "replace").strip()[:120])
         before_queries = self.counter()
         self.driver.docker("exec", self.names["app"], "ip", "link", "set", "dev", "labtun0", "down")
         self.wait_status(False)

@@ -137,10 +137,16 @@ class Process:
         if self.user:
             command = ["runuser", "-u", self.user, "--", *self.argv]
         environment = {**os.environ, **self.env_extra}
+        # Each wrapper process keeps a bounded log on the log volume. Sending child
+        # output to /dev/null used to make "proxy did not come up" undiagnosable.
+        # Official client logs stay on the named volume and are never tailed to
+        # stdout by default.
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        self._log = open(self.log, "ab", buffering=0)
         # The child gets its own session: killpg() then reaps helper processes too.
         self.handle = subprocess.Popen(
-            command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL, start_new_session=True, env=environment, cwd="/",
+            command, stdin=subprocess.DEVNULL, stdout=self._log, stderr=self._log,
+            start_new_session=True, env=environment, cwd="/",
         )
         self.pid = self.handle.pid
         self.started_at = time.time()
@@ -174,6 +180,13 @@ class Process:
         self._reap()
 
     def _reap(self):
+        handle = getattr(self, "_log", None)
+        if handle is not None:
+            try:
+                handle.close()
+            except OSError:
+                pass
+            self._log = None
         if self.handle is not None:
             try:
                 self.handle.wait(timeout=2)
@@ -372,8 +385,29 @@ class Supervisor:
                 self.notes.append(f"start_failed_{name}")
                 self.close_data_plane(force_context=context)
                 return
+        # Reporting READY before the listeners accept connections makes every
+        # consumer see "connection refused" while the status says ready.
+        if not self._await_listeners((context["socks_port"], context["http_port"])):
+            self.notes.append("proxy_listen_timeout")
+            self.close_data_plane(force_context=context)
+            return
         self.data_plane = "ready"
         self.data_context = context
+
+    def _await_listeners(self, ports, timeout: float = 15.0) -> bool:
+        """Wait until both proxy ports accept a TCP connection."""
+        deadline = time.time() + timeout
+        pending = set(ports)
+        while pending and time.time() < deadline:
+            for port in sorted(pending):
+                try:
+                    with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                        pending.discard(port)
+                except OSError:
+                    pass
+            if pending:
+                time.sleep(0.2)
+        return not pending
 
     def close_data_plane(self, force_context=None) -> None:
         for name in ("microsocks", "privoxy"):

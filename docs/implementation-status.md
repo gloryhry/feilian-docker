@@ -71,7 +71,12 @@
     ```
     即：READY 后约 2 秒打开数据面，约 8 秒后因 `route_probe_failed` 掉到 DISCONNECTED 并撤下 —— 该时间点与套件自身的 `labtun0 down` 故障注入吻合，属于**预期的 fail-closed**；但代理 curl 断言恰好落在这段窗口内失败（三发 `--max-time 6`）。
   - 已核对 guard 规则只匹配 `meta skuid {1001,1002}`，root（dnsmasq 的 VPN DNS 出站、控制面探测）不受影响，因此 DNS 被误封的假设不成立。
-  - 下一轮：确认数据面开启与套件首次代理请求之间代理进程是否已就绪（`open_data_plane` 注册进程后要等下一个 tick 才启动），据此决定是修正时序还是让断言等待就绪信号。
+  6. 修复**私有可诊断性缺口**：受管进程的 stdout/stderr 原本全部丢到 `/dev/null`，导致“代理没起来”无从判断。现在每个 wrapper 进程写 `/var/log/feilian/<name>.log`（命名卷内，官方客户端日志仍不默认 tail 到 stdout）。
+  7. 修复**真实缺陷：privoxy 访问规则顺序**。原渲染把 `deny-access 0.0.0.0/0` 排在 `permit-access` 之前，而 privoxy 是首次匹配生效 —— 等于全部拒绝。现已改为 permit 在前，并加顺序断言。
+  8. 修复**“状态 READY 但端口不监听”**：`open_data_plane` 现在启动代理后最多等 15 秒直到两个端口接受 TCP 连接，超时则撤下并记 `proxy_listen_timeout`，绝不提前报 ready。
+  9. `scripts/status.sh` 增加 `data_plane` 与 `proxy_usable`（= VPN ready 且数据面 ready），把“能用代理”变成可观测信号。
+  10. 套件侧：代理断言改为先等数据面就绪；失败行现在携带 curl/getent 的真实报错（不再只有布尔）。
+- **L2 当前结果（`mock24`）**：7 项 PASS（含真实内核 TUN、断隧道 no-fallback、断开时不回落公网 DNS、owned-only 清理）；`proxy.http/connect` 报 `Recv failure: Connection reset by peer`、`proxy.socks5h` 报 `cannot complete SOCKS5 connection (1)`、`dns.connected_split` getent 为空 —— 三者指向同一处：**dnsmasq 分域转发到 `10.91.0.53@labtun0` 未生效**，microsocks 解析不了企业域名因而连不上上游。下一轮从这里继续。
   - 修复两处阻断验收的真实缺陷：(1) 探针镜像构建沿用统一 `BUILD_NETWORK`（本机默认网络 DNS 被透明代理打断）；(2) 隔离容器 `--cap-drop ALL` 失去 `DAC_OVERRIDE` 后读不了属主不同的 0600 测试证书，仅对一次性测试 TLS 材料放宽为 0644（每轮独立隔离网络内的临时材料）。
 - **仍未执行**：L2 其余包级断言（代理经测试 TUN、guard 阻断、DNS 分域切换、网关 SNAT/MSS 真实包）、`scripts/deploy.sh` 的 digest 升级/回滚演练、README 重写。
 - Git 作者身份已配置；非交互 git push --dry-run 预检 exit 0，远端可接受目标功能分支。未实际推送。GitHub CLI 不存在，不因此安装系统工具。
