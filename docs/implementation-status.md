@@ -158,7 +158,8 @@
 - `auth.tls_wss` 尝试两版后**回退**（不留半成品）：
   1. 直接在容器内跑 `secrets_volume.py ensure` 生成秘密 → 网关拒绝启动（`secrets volume incomplete`）：helper 直调生成的 `web.htpasswd` 组属主不是 `www-data`，与 `web_gateway.py` 的严格校验不符。
   2. 改用宿主侧 `scripts/secrets-cli.py ensure`（它负责正确属主）→ 命令返回成功，但实验室卷 `<run>-secrets` **仍为空**，容器因此进入 "secrets volume incomplete" 分支，nginx 未监听 6080。
-  - 结论：宿主 CLI 与实验室卷的对接方式还没对上，值得单独一轮排查（例如 CLI 是否把文件写在 helper 的 `/secrets` 之外的路径，或它依据既有 owner 标签判断而跳过写入）。
+  - **根因已查明**：`scripts/secrets-cli.py ensure` **拒绝接管不是自己创建的卷**（正确的所有权行为）。实验室先建了同名卷，CLI 因而失败、卷保持为空。手工验证：CLI 自己建卷时 `web.htpasswd`/`tls.*`/`vnc.pass`/`access.json` 全部正确写入，属主 `root:www-data`、目录 0750、htpasswd 0640（此前判定"缺失"是我 `head -8` 截断所致）。
+  - 按此修正夹具（不预建 secrets 卷、由 CLI 创建、结束显式删卷）后仍失败于 `gateway_probe_failed_verificationerror`，说明还有第二个耦合点；为避免留下不稳定断言，**已回退到稳定状态**，继续计为 `NOT_IMPLEMENTED`。
   - 该路径在**手工验证**中曾通过（临时项目 `fl-e2e`：未认证 401、认证后 200、后端仅 Unix socket），但手工验证不算 L2，不计入验收。
 
 ## 外部门禁
