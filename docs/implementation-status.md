@@ -171,6 +171,31 @@
   - **L2 当前（`mock79`）：22 项 PASS，零 NOT_IMPLEMENTED。**
   - 该路径在**手工验证**中曾通过（临时项目 `fl-e2e`：未认证 401、认证后 200、后端仅 Unix socket），但手工验证不算 L2，不计入验收。
 
+### 代码审核与修复（第三轮）
+
+对全部改动做了一次系统审核，发现 11 个问题；其中 3 个（GUI 参数、崩溃退避、DNS 畸形包）在审核当轮修复，其余按三批处理：
+
+**批次 A — 正确性与可用性**
+
+1. `deploy apply` 改为「先确保镜像存在 → 再停机 → 失败自动回滚」；`ensure_present()` 避免 `run.sh` 把 digest 当 tag 去构建；`plan` 增加 `divergence` 暴露记录与实跑镜像不一致。
+2. DNS 转发器改为 `ThreadPoolExecutor` 并发（16 worker / 256 在途上限，过载回 SERVFAIL），一个卡住的上游不再拖垮全部解析；任务持有不可变策略快照。
+3. `PROXY_SOURCE_CIDRS` 接线（此前 `supervisor` 硬编码空列表，配置完全无效）；文档说明其用途是「同 Docker 网络的其它容器」，不是 LAN 直连。
+4. 网关补上组网能力：`network-resources.py ensure-access`（幂等、带所有权标签）+ `compose.gateway.yaml` overlay + `run.sh` 自动创建，README 增加消费者示例与「只路由企业网段」的警告。
+
+**批次 B — 健壮性**
+
+5. DNS over TCP（RFC 1035 §4.2.2）：同端口监听，2 字节长度前缀，限长 65535，5 秒超时；TCP 绑定失败只降级为 UDP 并打印警告。
+6. 数据面开启失败按指数退避（1→30 秒封顶），不再每秒重试 `nft apply`。
+7. `runtime.json` / `context.json` 收紧为 root-only（0600），父目录 0700。
+8. 删除死代码 `_sensitive()`、`controller_ready`、`internal`。
+
+**批次 C — 文档与测试覆盖**
+
+9. README 验收表纠正：此前写「L0 273 / L2 18 PASS，4 项未实现」，实际已是 **296 / 22 全 PASS**，文档比现实更悲观。
+10. CI 增加**真实 GUI 冒烟**：`START_GUI=1` 启动官方镜像，断言 `corplink --no-sandbox` 进程存活。此前 L2 用 `xmessage`、CI 用 `START_GUI=0`，GUI 路径完全没有覆盖——问题 1 正是从这里漏过去的。
+
+**验证**：单元测试 277 → **296**；L2 保持 **22/22**；三批各自独立提交。
+
 ## 外部门禁
 
 - Git作者身份、GitHub独立分支非交互push --dry-run已通过；尚未实际推送，GHCR/Actions权限与保护环境仍待验证；不在对话或日志中索取/打印token。
