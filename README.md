@@ -1,183 +1,218 @@
-# 飞连 (FeiLian) Linux 客户端 · Docker 化运行环境
+# 飞连 (FeiLian) 容器化运行环境 · 企业网络出口
 
-把火山引擎 **飞连 Linux 客户端** 关进一个容器里跑，窗口映射回宿主机，网络走宿主机现有链路，
-容器内看不到宿主机任何文件内容。
+把火山引擎 **飞连 Linux 客户端** 关进容器里跑，并且把它变成**宿主机上其它程序可以按需使用的企业网络出口**：
+登录照常在浏览器里做，出口通过 HTTP / SOCKS5 代理（可选 SNAT 网关）提供，而不是把宿主机整机流量割给 VPN。
 
-- 官方安装包：`com.volcengine.feilian` **3.2.16**（Electron 22.3.27），来自
-  [飞连官方下载页](https://www.volcengine.com/product/feilian/download) 的 CDN 直链
-- 基础镜像：`debian:trixie-slim`（与宿主机 Debian 13 对齐）
-- 窗口：容器内 `Xvfb → x11vnc → noVNC`，宿主机浏览器打开 `http://127.0.0.1:6080/`
-  （也支持 `GUI_MODE=x11`，只挂一个 X socket 直接画到宿主机桌面）
-- 隔离：**零宿主目录挂载**。只有 3 个 docker 命名卷（home / root / logs），
-  没有 `-v /home:/host`、没有 `docker.sock`、没有 `privileged`，只有 `NET_ADMIN` + `NET_RAW`
+- 官方安装包：`com.volcengine.feilian` **3.2.16**（r8362），amd64 / arm64 双架构
+- 基础镜像：`debian:trixie-slim`，按 **digest** 固定
+- 管理入口：容器内 `Xvfb → x11vnc → websockify(Unix socket) → nginx`，nginx 负责 **Basic 认证 + TLS + 来源 ACL**
+- 数据面：`Privoxy`（HTTP）→ `microsocks`（SOCKS5），两个进程都是固定 UID 的非 root 用户
+- DNS：项目自带的 `runtime/dns_forward.py` 做分域解析（企业域走隧道，公共域走 bootstrap）
+- 防泄漏：容器内专属 `nftables` 表 `feilian_guard`，只匹配代理 UID，不碰宿主规则
+- 隔离：零宿主目录挂载；无 `privileged`、无 `SYS_ADMIN`、无 `docker.sock`、无 host PID
+
+> ⚠️ **本仓库验证到的是「实现 + 隔离模拟验收」这一层**。真实企业账号登录、MFA、企业内网准入
+> 与物理 WiFi/macvlan 环境**没有**在本仓库验证过，不能据此宣称企业网络已打通。
 
 ---
 
-## 目录
+## 目录结构
 
 ```
 .
-├── Dockerfile                 镜像：Electron 运行库 + Xvfb/x11vnc/noVNC + 飞连
-├── compose.yaml               默认：bridge 网络 + NAT
-├── compose.host.yaml          host 网络：容器直接用宿主机网络栈（含 WiFi/代理）
-├── compose.macvlan.yaml       macvlan：容器以独立 IP 出现在二层网络（有线）
-├── build.sh                   构建镜像（--network host 适配本机代理）
-├── run.sh                     一键启动，自动选择可用网络模式
-├── stop.sh                    停止
+├── Dockerfile                 多阶段：runtime-dependencies / runtime-base / mock / production
+├── compose.yaml               主模式：项目专属 bridge + NAT
+├── compose.host.yaml          host 兼容模式（显式 opt-in，无托管出口）
+├── compose.macvlan.yaml       macvlan 高级模式（强制 TLS/认证/来源 ACL）
+├── build.sh                  经校验配置的 Buildx 封装（默认不推送）
+├── run.sh                    预检 → 项目网络 → 启动（失败不自动切 host）
+├── stop.sh                   优雅停止；仅显式 --cleanup-network 才回收网络
+├── config/client.lock.json   客户端版本/URL/完整 SHA256/DEB 头/基础镜像 digest
 ├── scripts/
-│   ├── fetch-deb.sh           从飞连官网解析 Linux 安装包直链并下载到 dist/
-│   ├── entrypoint.sh          容器 PID1：dbus / NetworkManager / 服务 / GUI / VNC
-│   ├── feilian-gui.sh         手动前台起 GUI（调试）
-│   ├── host-net.sh            宿主机侧网络准备（ufw 转发、无线/代理检测）
-│   └── net-macvlan.sh         macvlan 网络创建/删除
-├── verify/
-│   ├── isolation.sh           证明容器看不到宿主机文件
-│   ├── window.sh              抓容器内窗口截图 + X 窗口树
-│   └── network.sh             容器网络连通性检查
-└── dist/                      官方安装包（git 忽略）
+│   ├── config.py             受限配置解析（无 eval/source，严格白名单）
+│   ├── client-artifacts.py   锁定下载与校验（validate/fetch/export/discover）
+│   ├── build-image.py        Buildx 计划与执行
+│   ├── secrets-cli.py        秘密卷生成/导入/轮换（宿主侧）
+│   ├── network-resources.py  项目网络与 UFW 规则的 doctor/plan/apply/cleanup
+│   ├── deploy.py             digest 固定的 plan/apply/rollback
+│   ├── entrypoint.sh         容器 PID1：dbus → 网关准备 → 交给 supervisor
+│   ├── status.sh             运行存活与 VPN 就绪分离查询
+│   └── fetch-deb.sh          client-artifacts 的薄包装
+├── runtime/
+│   ├── supervisor.py         进程组、有界重启、就绪联动数据面、安全排空
+│   ├── vpn_state.py          状态机与真实就绪探测（含 readiness TTL）
+│   ├── dns_manager.py        DNS 单属主：策略渲染、原子替换、所有权恢复
+│   ├── dns_forward.py        分域 DNS 转发器（企业域不回落公网）
+│   ├── proxy_config.py       Privoxy + microsocks 配置渲染
+│   ├── egress_policy.py      nftables 守卫（专属表、只匹配代理 UID）
+│   ├── web_gateway.py        管理网关 nginx 配置（认证/TLS/ACL）
+│   └── secrets_volume.py     容器内秘密卷 helper
+├── verify/                   验收驱动与套件
+└── tests/                    离线单元 + 隔离集成套件
 ```
+
+---
 
 ## 快速开始
 
 ```bash
-# 1. 下载官方 Linux 客户端（250MB，解析官网当前版本直链）
-bash scripts/fetch-deb.sh
+# 1. 取官方安装包（只按 config/client.lock.json 锁定版本，不自动追新）
+bash scripts/fetch-deb.sh --arch all
 
-# 2. 构建镜像（首次约 5~10 分钟，取决于 apt 源速度）
-./build.sh
+# 2. 生成管理入口凭据与证书（写入专用命名卷，不落宿主机目录）
+python3 scripts/secrets-cli.py ensure          # 默认 WEB_TLS=off；需要 TLS 时加 --set WEB_TLS=selfsigned
 
-# 3. 启动
+# 3. 构建（单架构默认 --load；多架构必须显式 --output 或 --push）
+./build.sh --platform native
+
+# 4. 启动（预检失败会停止并打印原因，绝不自动切 host）
 ./run.sh
-#    → http://127.0.0.1:6080/vnc.html?autoconnect=1&resize=scale
 
-# 4. 验证
-bash verify/window.sh      # 抓图，确认飞连登录窗口渲染
-bash verify/isolation.sh   # 确认容器内没有宿主机文件
+# 5. 查看状态：容器是否活着 ≠ 企业网是否可用
+bash scripts/status.sh
 ```
 
-宿主机没有浏览器/桌面时，用 VNC 客户端连 `127.0.0.1:5900`（端口只绑回环，需要 SSH 隧道）：
+管理入口默认只绑 `127.0.0.1`；需要远程访问时用 SSH 隧道，**不要**直接把端口暴露出去：
 
 ```bash
-ssh -L 6080:127.0.0.1:6080 you@host   # 然后本地浏览器开 http://127.0.0.1:6080/
+ssh -L 6080:127.0.0.1:6080 you@host    # 浏览器打开 https://127.0.0.1:6080/
 ```
 
+---
 
-## 本机实测结果（2026-10-29）
+## 三种运行模式
 
-环境：Debian 13 / 内核 6.12 / Docker 29.7.2 / 无桌面、**无无线网卡**（只有 `enp1s0`，出口经 mihomo TUN 代理）。
+| 模式 | 用途 | 硬限制 |
+|---|---|---|
+| `bridge`（默认，主支持） | 管理入口 + HTTP/SOCKS5 代理 + 分域 DNS + 可选网关/MSS | 不自动改宿主默认路由/DNS；宿主侧只允许项目网桥的显式放行 |
+| `host`（显式 opt-in） | 官方客户端/本机 GUI 兼容 | 必须 `NET_MODE=host` **且** `ALLOW_HOST_NETWORK=1`；禁止托管代理、DNS 53 监听、网关、MSS、guard；不承诺隔离 |
+| `macvlan`（高级） | 容器以独立 IP 出现在二层网络 | 必须显式 parent/subnet/空闲 IP，且强制 `WEB_TLS` + 认证 + 来源 ACL；无管理路径时拒绝启动 |
 
-| 项 | 结果 |
-|---|---|
-| 官方安装包 | `FeiLian_Linux_amd64_v3.2.16_r8362_0d182a.deb`，250,082,966 字节，sha256 `0ecaf5a4…946a9d3` |
-| 镜像 | `feilian-gui:3.2.16`，2.29GB（Electron + Xvfb/noVNC + 客户端） |
-| 客户端启动 | `corplink-service` 监听 `31055/31056`，Electron GUI 以 `feilian` 用户渲染到 `:99` |
-| 窗口 | 正常显示“飞连 / 请输入企业识别码 / 验证激活”，中文字体正常（见下图） |
-| 网络 | 容器内 `https://www.baidu.com` `https://www.volcengine.com` 均 200（host 模式） |
-| 隔离 | `verify/isolation.sh` PASS：挂载只有 3 个命名卷，无宿主机目录，`/home/glory`、`/var/lib/docker` 均不可见，`/etc/shadow` 与宿主机不同，`Privileged=false`、`CapAdd=[CAP_NET_ADMIN CAP_NET_RAW]` |
-| 网络模式 | `auto` 实测：bridge 出网被 mihomo 劫持 → 自动切 `host`（日志会打印原因） |
-| 无法验证 | 真实登录/隧道：没有企业识别码和账号；WiFi 关联：本机没有无线硬件 |
+`NET_MODE=auto` 只等价于 `bridge`（仅做诊断），**永远不会**回退到 host。
 
-![飞连容器窗口](docs/screenshot-activate.png)
+---
 
-> 抓图命令：`bash verify/window.sh`（容器内 `scrot` → 拷回 `artifacts/`）。
+## 代理用法
 
-### 为让它跑起来，宿主机上动了什么
+代理只在 VPN 就绪（且数据面打开）后才会工作；未就绪时连接会被拒绝，而不是悄悄走公网。
 
-- `ufw route allow in on <docker网桥> out on <上行口>` 及其反向：只在 bridge 模式需要，
-  `scripts/host-net.sh` 幂等添加；不想要就 `sudo ufw status numbered` 找到后 `delete`。
-- 没有改 mihomo 配置、没有改 Docker daemon、没有关防火墙。
+```bash
+# HTTP 代理（80 走普通转发；CONNECT 仅限 PROXY_CONNECT_PORTS，默认 443）
+curl -x http://127.0.0.1:8888 http://intranet.example/
+curl -x http://127.0.0.1:8888 https://intranet.example/
 
-## 网络：三种模式，按宿主机环境选
-
-| 模式 | 容器看到什么 | 适合 | 代价 |
-|---|---|---|---|
-| `bridge`（默认） | Docker 网桥 + NAT，出口是宿主机当前链路（笔记本上=WiFi） | 普通 Docker 宿主机 | 无 |
-| `host` | 直接用宿主机网络栈 | 宿主机有透明代理/防火墙打断 bridge 时 | 飞连的 tun/路由落在宿主机 netns |
-| `macvlan` | 独立 IP 出现在宿主机所在二层 | 有线、且交换机允许额外 MAC | 无线 STA 基本不可用；容器与宿主机不通 |
-
-`run.sh` 会先用镜像跑一次出网探测：`bridge` 通就用 `bridge`，不通自动切 `host` 并说明原因。
-本机（Debian 13 + mihomo TUN 透明代理）实测 **bridge 出网被劫持**，所以本机走 `host`；
-在普通笔记本/服务器上默认就是 `bridge`。
-
-### 关于“让容器里的飞连连 WiFi”
-
-这里必须说清楚三件事，因为它们决定了能做到什么程度：
-
-1. **飞连不是 WiFi 管理器**。它的 Linux 客户端是企业零信任/VPN 客户端：在现有网络上建
-   tun 隧道、跑准入与合规检查。它“连 WiFi”只发生在 **网络准入（802.1X/Portal）** 功能里——
-   通过 NetworkManager 配 802.1X 档案、用 `iw` 读信号，前提是**容器里有一块真的无线网卡**。
-2. **同一块无线网卡不能被两个网络命名空间同时关联**。宿主机 `wpa_supplicant` 已经占着它，
-   容器拿到的 macvlan/ipvlan 只是二层虚拟接口，没有 radiotap，做不了 802.11 关联
-   （mac80211 驱动不支持 STA 接口上的 macvlan；AP 还会按 MAC 过滤）。
-   所以“把宿主机无线网络映射进容器”在工程上只能是：**共享宿主机的网络出口**（bridge/host），
-   或 **把一块独立无线网卡整块透传进容器**（下面 USB 那条）。
-3. 因此本方案给的是：容器能通过宿主机的 WiFi 出网、能建 tun、能跑飞连的隧道与准入逻辑；
-   若要容器自己完成 WiFi 关联/802.1X 握手，必须给它一块独立网卡：
-
-```yaml
-# compose.override.yaml 片段：透传独立 USB 无线网卡（宿主机上不能再使用它）
-    devices:
-      - /dev/net/tun:/dev/net/tun
-      - /dev/bus/usb:/dev/bus/usb          # 或者精确到 /dev/bus/usb/001/004
-    cap_add:
-      - NET_ADMIN
-      - NET_RAW
-```
-容器内再 `ip link set wlan0 up` + NetworkManager 接管即可（镜像里已带 NM / iw / wpa_supplicant 依赖）。
-
-宿主机本身没有无线网卡时（本机就是：只有 `enp1s0` 虚拟网卡），这条链路无从谈起——
-容器只能复用现有有线/代理出口。
-
-## 窗口映射
-
-- **默认 `GUI_MODE=vnc`**：容器内 `Xvfb :99` + `x11vnc`（只听 127.0.0.1:5900）+ `websockify`
-  提供 noVNC。宿主机只映射 `127.0.0.1:6080`，外网访问不到。
-- **`GUI_MODE=x11`**：容器直接画到宿主机 X server 上。此时只挂载**那一个 display 的 socket**：
-
-```yaml
-    volumes:
-      - /tmp/.X11-unix/X0:/tmp/.X11-unix/X0   # 只挂 socket，不挂宿主机其他路径
-    environment:
-      GUI_MODE: x11
-      X11_DISPLAY: ":0"
+# SOCKS5（socks5h：域名在容器侧解析，才能命中分域规则）
+curl --proxy socks5h://127.0.0.1:1088 https://intranet.example/
 ```
 
-## 隔离性（“容器看不到宿主机文件”）
+- 原始代理**始终只允许回环**；LAN 直连代理不是本项目的安全默认，请用 SSH 隧道。
+- `scripts/status.sh` 输出 `proxy_usable`：只有 `vpn_ready` 且 `data_plane=ready` 时才为真。
 
-实现方式：
+---
 
-- `compose*.yaml` 里**没有任何宿主机目录 bind mount**，只有命名卷
-  （`feilian-home` / `feilian-root` / `feilian-logs`，docker 自管，不在宿主机任意路径下暴露）
-- 不给 `privileged`，不给 `SYS_ADMIN`，不给 `docker.sock`；只有 `NET_ADMIN` + `NET_RAW` + `/dev/net/tun`
-- `no-new-privileges:true`
-- 唯一破例：`GUI_MODE=x11` 时要挂**一个** X socket 文件（X11 协议本身要求），
-  默认的 `vnc` 模式不需要，连这个都没有
+## 配置
 
-`bash verify/isolation.sh` 会逐项打印：挂载列表、容器 `/` 内容、宿主机特征路径不存在、
-两边 `/etc/shadow` 不同、capability 列表。
+所有配置走同一套校验（`scripts/config.py`），优先级 **CLI `--set` > 进程环境 > `.env` > 安全默认**。
+`.env` 只接受 `KEY=字面值`，**不支持** `export`、变量展开、命令替换或行尾注释，也绝不会被 `source`。
 
-> 说明：Docker 必然会注入 `/etc/hosts`、`/etc/hostname`、`/etc/resolv.conf` 三个**由 docker 生成**的
-> 配置文件（内容只有容器自己的 hostname/网络参数，不含宿主机用户数据）。这是容器运行时的最低要求，
-> 无法去掉。
+常用项（完整见 [.env.example](.env.example)）：
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `NET_MODE` | `bridge` | `bridge`/`host`/`macvlan`；`auto` 等同 bridge |
+| `ALLOW_HOST_NETWORK` | `0` | host 模式必须同时置 1 |
+| `WEB_BIND` / `NOVNC_HOST_PORT` | `127.0.0.1` / `6080` | 非回环必须同时满足认证 + TLS + 来源 CIDR |
+| `PROXY_ENABLED` / `PROXY_REQUIRE_VPN` | `1` / `1` | 未就绪不提供企业出口 |
+| `HTTP_PROXY_HOST_PORT` / `SOCKS_PROXY_HOST_PORT` | `8888` / `1088` | 宿主侧发布端口 |
+| `CORP_DOMAINS` / `CORP_CIDRS` | 空 | 真实企业域/网段，**不预填、不伪造** |
+| `DNS_MODE` | `auto` | `split`（有企业域）/ `full` / `off` |
+| `VPN_PROBE_DNS_NAME` / `VPN_PROBE_URL` | 空 | 就绪探测目标；缺失时状态为 `UNCONFIGURED`，不影响 GUI 登录 |
+| `GATEWAY_ENABLED` / `MSS_MODE` | `0` / `off` | 可选 SNAT 网关与 MSS clamp |
+| `GUARD_ENABLED` | `1` | 隔离模式下启用容器内 nftables 守卫 |
+
+---
+
+## 虚拟机的真实状态：`status.sh` 与健康检查
+
+```json
+{"runtime_live": true, "vpn_ready": false, "data_plane": "closed", "proxy_usable": false}
+```
+
+- **容器健康**（Docker `HEALTHCHECK`）只表示 supervisor 与其关键进程活着；
+- **VPN 就绪**要求：隧道接口与目标路由真实存在 + 企业 DNS 解析成功 + 内部 HTTPS 探针证书与状态符合预期，且连续两次成功；
+- **代理可用**要求就绪 **且** 数据面已打开（代理端口真的在接受连接）。
+
+三者分别成立，任何一环都不能替代另一环。
+
+---
+
+## 升级与回滚（按 digest）
+
+```bash
+./deploy.sh plan   --image ghcr.io/<owner>/<repo>:<tag>
+./deploy.sh apply  --image ghcr.io/<owner>/<repo>@sha256:<index> --yes
+./deploy.sh rollback --yes
+```
+
+- 部署记录写在 `.state/<project>/deploy.json`（0600），记录的是 **digest**，不是可变 tag；
+- `apply` 会保留上一 digest 作为回滚点，**从不删除数据卷**；
+- `rollback` 只接受已记录且格式可校验的旧 digest，无记录时拒绝猜测；
+- 官方客户端的会话状态会随版本迁移，所以「换回旧镜像」不等于「回滚数据」——正式环境请同时准备数据快照。
+
+---
+
+## 验收分级
+
+| 级别 | 内容 | 当前状态 |
+|---|---|---|
+| L0 单元 | 配置解析、锁定下载、资源所有权、编排、DNS/代理/守卫渲染、秘密、部署回滚 | ✅ 273 项全绿 |
+| L1 契约 | 三种模式的 Compose 渲染（端口/挂载/权限/秘密） | ✅ |
+| L2 隔离集成 | 真实内核 TUN + 假企业 DNS/HTTPS + 抓包断言 + 故障注入 | 🟡 18 项 PASS，4 项未实现 |
+| L3 真实客户端无账号 | 官方镜像启动、服务端口、GUI 登录页（**不等于**隧道可用） | ✅ CI 双架构原生 runner 通过 |
+| L4 真实企业 | 企业识别码/账号/MFA、内网准入 | ❌ 未验证（需人工） |
+
+L2 已通过的项包括：代理三件套（HTTP/CONNECT/SOCKS5h）经隧道访问企业目标、分域与全量 DNS、
+断隧道/撤路由/IPv6 拒止、**控制器崩溃 fail-closed**、旧连接不再续传（规划中）、
+owned-only 清理与外来 nft 表保护、抓包证明引导接口无企业明文流量。
+
+未实现的 4 项（`fault.old_tcp`、`auth.tls_wss`、`gateway.snat`、`gateway.syn_mss`）**计为失败**，不会被当作通过。
+
+```bash
+bash verify/all.sh --suite unit
+bash verify/all.sh --suite mock        # 需要 Docker；使用隔离网络与卷
+```
+
+---
+
+## 安全边界（请如实理解）
+
+- 防泄漏的承诺范围是**经本项目代理/网关的流量**，不是宿主机全局 kill-switch，也不是对容器 root 的恶意对抗保证。
+- host 模式共享宿主 netns：官方客户端本身仍可能改宿主路由，退出也不保证完全恢复。
+- 管理入口的 Basic 认证**只保护管理界面**；原始代理没有用户名密码，靠"只绑回环 + 来源 ACL"保护。
+- 秘密放在专用命名卷，容器内只读挂载；宿主机不会有明文副本（可选的本地凭据备份为 0600）。
+- 本机若存在透明代理（mihomo 等），Docker bridge 出网可能被劫持；本项目**不会**自动改你的代理或默认路由，
+  `run.sh` 预检失败会直接停下并打印诊断。
+
+---
+
+## 镜像发布
+
+- 源仓库：`github.com/gloryhry/feilian-docker`，开发分支 `feat/corplink-inspired-runtime`
+- 镜像：`ghcr.io/gloryhry/feilian-docker`（**私有**）
+- 发布方式：推送 `release-v*` 标签触发 `.github/workflows/client-release.yml`，在**原生 amd64 + arm64** runner 上
+  分别构建并做真实客户端无账号冒烟，再合成多架构 index；默认不推 `latest`
+- 最近一次发布：索引 `sha256:724a9177f96941590b8e420999fd3e9105d1357b6f9f8bdfb8f38000c3b28a36`
+  （amd64 `43163c5e…`、arm64 `0a1eca3c…`），匿名拉取被拒（401），按 digest 拉取成功
+
+> 官方客户端为第三方专有软件。发布镜像前请自行确认所在组织的再分发许可；
+> 本仓库默认不公开分发客户端镜像。
+
+---
 
 ## 已知限制
 
-- 飞连需要企业账号登录；没账号只能停在登录/扫码界面（本仓库验证到的就是窗口正常渲染这一步）。
-- 客户端是 Electron 22（Chrome 108），依赖已按 Debian 13 补齐；老版本 Ubuntu 库名不同需自行调整。
-- 飞连的合规/EDR 模块（`360safe`、`corplink-security`）在容器里可能因内核能力不足报降级，属预期。
-- `host` 模式连上 VPN 后，宿主机流量也会走隧道（因为共用 netns）；`./stop.sh` 停容器即恢复。
-- `macvlan` 在云主机上常被 anti-spoofing 丢弃（本机实测：ping 网关都不通）。
-
-## 排障
-
-```bash
-docker logs -f feilian                     # 所有子进程日志会汇到 stdout
-docker exec -it feilian bash               # 进容器
-docker exec -it feilian tail -f /var/log/feilian/corplink-gui.log
-bash verify/network.sh
-```
-
-- **窗口是黑的/没窗口**：先看 `corplink-gui.log`；Electron 起不来通常是缺库，`ldd` 一下
-  `/opt/apps/com.volcengine.feilian/files/corplink`。
-- **登录转圈**：`bash verify/network.sh`，bridge 模式下容器出网被宿主机代理劫持时用 `NET_MODE=host ./run.sh`。
-- **服务反复重启**：`corplink-service` 需要 dbus；看 `/var/log/feilian/corplink-service.log`。
+- 真实企业登录/MFA/准入未验证；`UNCONFIGURED` 是正常状态，不是故障。
+- 官方客户端 GUI 是 Electron 22，依赖已按 Debian 13 补齐；其它发行版需自行调整。
+- 企业合规/EDR 模块在容器内核能力受限时可能降级，属预期。
+- macvlan 在云主机上常被 anti-spoofing 丢弃；无线 STA 基本不可用。
+- L2 仍有 4 项未实现的验收门禁，见上表。
