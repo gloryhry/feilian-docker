@@ -71,6 +71,20 @@ def _atomic_json(path: Path, data: dict) -> None:
             temporary.unlink(missing_ok=True)
 
 
+def _collapse(notes, keep: int = 6) -> list:
+    """Collapse consecutive duplicates so one flapping child cannot hide the rest."""
+    result = []
+    for note in notes:
+        if result and result[-1][0] == note:
+            result[-1][1] += 1
+        else:
+            result.append([note, 1])
+    out = []
+    for note, count in result[-keep:]:
+        out.append(note if count == 1 else f"{note} (x{count})")
+    return out
+
+
 def _atomic_text(path: Path, text: str, mode: int = 0o600) -> None:
     if path.is_symlink():
         raise SupervisorError("refusing symlinked runtime file")
@@ -273,8 +287,10 @@ class Supervisor:
             code = proc.poll()
             if code is not None and proc.pid:
                 proc._reap()
-                if name == "controller" and not self.stop_requested:
-                    self.notes.append("controller_exited")
+                # Record every unexpected child exit: silently restarting a process
+                # that dies on startup used to look exactly like "it is running".
+                if not self.stop_requested and not self.draining:
+                    self.notes.append(f"{name}_exited_rc{code}")
             if not proc.pid and now >= proc.next_try and not self.stop_requested:
                 if name in ("controller", "dnsmasq") and not self.managed:
                     continue
@@ -450,7 +466,7 @@ class Supervisor:
             "updated_at": time.time(),
             "processes": {name: {"pid": proc.pid, "alive": proc.alive(), "required": proc.required}
                           for name, proc in sorted(self.procs.items())},
-            "notes": self.notes[-20:],
+            "notes": _collapse(self.notes)[-20:],
             "transitions": getattr(self, "transitions", [])[-10:],
         }
 

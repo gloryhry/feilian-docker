@@ -269,7 +269,9 @@ def render_configs(context: dict[str, Any], state_dir: Path = Path("/run/feilian
     privoxy = [
         header, f"listen-address {context['listen_ipv4']}:{context['http_port']}",
         "toggle 1", "enable-remote-toggle 0", "enable-remote-http-toggle 0", "enable-edit-actions 0",
-        "enforce-blocks 1", "accept-intercepted-requests 0", "debug 0",
+        "enforce-blocks 1", "accept-intercepted-requests 0",
+        # Opt-in tracing: 0 is quiet by design; 1 surfaces connect/ACL failures.
+        "debug " + ("1" if os.environ.get("FEILIAN_PROXY_DEBUG") == "1" else "0"),
         # Privoxy matches access rules first-to-last: permits MUST precede the
         # catch-all deny, otherwise every client (including loopback) is refused.
         *[f"permit-access {source}" for source in sources], "deny-access 0.0.0.0/0",

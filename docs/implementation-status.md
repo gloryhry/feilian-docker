@@ -100,7 +100,13 @@
   - 决定不再追这个黑盒，改走**自管转发器**（`runtime/dns_forward.py`，~230 行）：监听 `127.0.0.1:53`，直接消费 DNS 属主已渲染的同一份策略文件（`server=/corp.test/10.91.0.53@labtun0`、`server=/corp.test/` 表示封锁、裸 `server=` 为 bootstrap），按最长后缀匹配、`SO_BINDTODEVICE` 绑定、失败返回 SERVFAIL 而绝不回落公网。所有权校验沿用 `PidReloader`（可配置 exe/参数标记，仍校验 pid+netns+参数）。
   - 期间修掉两个真实缺陷：SIGHUP 曾被当成退出信号（而属主正是用 SIGHUP 重载，导致重启风暴）；转发器早于策略文件启动会直接退出，现改为有界等待。
   - **结果（`mock40`）**：`dns.connected_split` 与 `proxy.socks5h` **由 FAIL 转 PASS**，PASS 数升到 8。
-  - 剩余失败：`proxy.http` / `proxy.connect` 报 `Connection reset by peer`（privoxy 侧），而直连 SOCKS 的 `proxy.socks5h` 已通过 —— 下一轮聚焦 privoxy → microsocks 这一段。
+  - **DNS 侧已完全打通**（`mock44`）：`via-local-resolver: ok(50 bytes)`、`via-corp-dns: ok`、`tcp-corp-443: ok`，`dns.connected_split` 与 `proxy.socks5h` 均 PASS。
+  - 剩余失败：`proxy.http`（`Connection reset by peer`）与 `proxy.connect`（`Proxy CONNECT aborted`）。已排除的：
+    * privoxy 未运行：未退出（无 `privoxy_exited` 记录，日志有启动横幅）；
+    * 请求被访问规则拒绝：`permit-access` 已排在 `deny-access` 之前；
+    * 到 1080 的连通性：同一 netns 的 `proxy.socks5h` 通过，说明守卫与回环路径对 1080 正常。
+  - 新增诊断能力：子进程退出码记入 `transitions` 之外的 `notes`（并折叠重复条目，避免 nginx/websockify 的启动失败把其它信息淹没）；`FEILIAN_PROXY_DEBUG=1` 可打开 privoxy `debug`。当前无 secrets 时 nginx/websockify 会反复退出（预期：管理入口需要认证材料），属已知的噪声源。
+  - 下一轮：在窗口内 `ss -ltnp` 确认 8118 的属主进程，并直接对 127.0.0.1:8118 发起一次原始 HTTP 请求，判断 RST 来自私有的监听缺失还是守卫。
   - 修复两处阻断验收的真实缺陷：(1) 探针镜像构建沿用统一 `BUILD_NETWORK`（本机默认网络 DNS 被透明代理打断）；(2) 隔离容器 `--cap-drop ALL` 失去 `DAC_OVERRIDE` 后读不了属主不同的 0600 测试证书，仅对一次性测试 TLS 材料放宽为 0644（每轮独立隔离网络内的临时材料）。
 - **仍未执行**：L2 其余包级断言（代理经测试 TUN、guard 阻断、DNS 分域切换、网关 SNAT/MSS 真实包）、`scripts/deploy.sh` 的 digest 升级/回滚演练、README 重写。
 - Git 作者身份已配置；非交互 git push --dry-run 预检 exit 0，远端可接受目标功能分支。未实际推送。GitHub CLI 不存在，不因此安装系统工具。

@@ -66,10 +66,6 @@ def query_bound(name, server, device, timeout=8):
     finally:
         s.close()
 
-import subprocess
-print('dnsmasq-proc:', subprocess.run(['ps', '-eo', 'user,pid,args'], capture_output=True, text=True).stdout.
-      replace(chr(10), ' ; ').split('/usr/sbin/dnsmasq')[-1][:120] if 'dnsmasq' in subprocess.run(['ps','-eo','args'],capture_output=True,text=True).stdout else 'absent')
-print('upstream-sockets:', subprocess.run(['ss','-uanp'], capture_output=True, text=True).stdout.replace(chr(10), ' ; ')[:400])
 print('via-corp-dns-bound:', query_bound('health.corp.test', '10.91.0.53', 'labtun0'))
 print('via-local-resolver:', query('health.corp.test', '127.0.0.1'))
 print('via-corp-dns:', query('health.corp.test', '10.91.0.53'))
@@ -178,7 +174,7 @@ class Lab:
                "FEILIAN_TEST_OWNER": self.owner, "WEB_AUTH": "1", "WEB_TLS": "off", "WEB_BIND": "127.0.0.1",
                "START_NETWORKMANAGER": "0", "START_SERVICE": "1", "START_GUI": "1", "PROXY_BIND": "127.0.0.1"}
         if suite == "mock":
-            env.update(FEILIAN_DNS_DEBUG="1", CORP_DOMAINS="corp.test", CORP_CIDRS=CORP, DNS_MODE="split", VPN_DNS_SOURCE="manual",
+            env.update(FEILIAN_DNS_DEBUG="1", FEILIAN_PROXY_DEBUG="1", CORP_DOMAINS="corp.test", CORP_CIDRS=CORP, DNS_MODE="split", VPN_DNS_SOURCE="manual",
                        VPN_DNS="10.91.0.53", VPN_IFACE="labtun0", VPN_PROBE_DNS_NAME="health.corp.test",
                        VPN_PROBE_URL="https://health.corp.test/health", VPN_PROBE_CA_FILE="/run/lab-ca.crt")
         else:
@@ -272,7 +268,7 @@ class Lab:
         diag = self.driver.docker("exec", self.names["app"], "python3", "-c", DNS_DIAG, check=False)
         report.add("diag.data_plane_window",
                    "PASS" if diag.returncode == 0 else "FAIL",
-                   (diag.stdout or diag.stderr).decode("utf-8", "replace").strip()[:300], required=False)
+                   (diag.stdout or diag.stderr).decode("utf-8", "replace").strip()[:800], required=False)
         report.add("mock.real_kernel_tun", "PASS" if ready.get("evidence", {}).get("interface") == "labtun0" else "FAIL", "test_udp_transport_not_official_vpn")
         for name, proxy, url in (("http", "http://127.0.0.1:8118", "http://health.corp.test/health"),
                                  ("connect", "http://127.0.0.1:8118", "https://health.corp.test/health"),
