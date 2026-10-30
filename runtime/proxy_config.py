@@ -272,9 +272,10 @@ def render_configs(context: dict[str, Any], state_dir: Path = Path("/run/feilian
         "enforce-blocks 1", "accept-intercepted-requests 0",
         # Opt-in tracing: 0 is quiet by design; 1 surfaces connect/ACL failures.
         "debug " + ("1" if os.environ.get("FEILIAN_PROXY_DEBUG") == "1" else "0"),
-        # Privoxy matches access rules first-to-last: permits MUST precede the
-        # catch-all deny, otherwise every client (including loopback) is refused.
-        *[f"permit-access {source}" for source in sources], "deny-access 0.0.0.0/0",
+        # Privoxy applies the LAST matching access rule and silently resets a
+        # denied client (no 403). The catch-all deny therefore has to come FIRST
+        # and the explicit permits LAST - the reverse order denies loopback too.
+        "deny-access 0.0.0.0/0", *[f"permit-access {source}" for source in sources],
         f"actionsfile {state_dir / 'proxy' / 'feilian.action'}",
         f"forward-socks5t / 127.0.0.1:{context['socks_port']} .",
     ]

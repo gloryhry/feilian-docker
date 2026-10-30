@@ -66,6 +66,23 @@ def query_bound(name, server, device, timeout=8):
     finally:
         s.close()
 
+import subprocess as _sp
+_ss = _sp.run(['ss', '-ltnp'], capture_output=True, text=True).stdout
+print('listeners:', ' | '.join(l.strip() for l in _ss.splitlines() if ':8118' in l or ':1080' in l)[:300])
+for _port in (8118, 1080):
+    try:
+        _c = socket.create_connection(('127.0.0.1', _port), timeout=3); _c.close()
+        print('connect %d: ok' % _port)
+    except Exception as _exc:
+        print('connect %d: %s %s' % (_port, type(_exc).__name__, _exc))
+try:
+    _s = socket.create_connection(('127.0.0.1', 8118), timeout=3)
+    _s.sendall(b'GET http://health.corp.test/health HTTP/1.1\r\nHost: health.corp.test\r\n\r\n')
+    _s.settimeout(5)
+    print('raw-8118:', _s.recv(120).decode('latin-1').splitlines()[0][:100])
+    _s.close()
+except Exception as _exc:
+    print('raw-8118: %s %s' % (type(_exc).__name__, _exc))
 print('via-corp-dns-bound:', query_bound('health.corp.test', '10.91.0.53', 'labtun0'))
 print('via-local-resolver:', query('health.corp.test', '127.0.0.1'))
 print('via-corp-dns:', query('health.corp.test', '10.91.0.53'))
