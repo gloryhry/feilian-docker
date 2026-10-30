@@ -20,6 +20,12 @@ if "--location" in args or "-L" in args or "--insecure" in args or "-k" in args:
 output = args[args.index("--output") + 1]
 url = args[args.index("--url") + 1]
 mode = os.environ.get("MOCK_CURL_MODE", "ok")
+counter = os.environ.get("MOCK_CURL_COUNTER")
+attempt = 1
+if counter:
+    state = Path(counter)
+    attempt = int(state.read_text() or 0) + 1 if state.exists() else 1
+    state.write_text(str(attempt))
 if mode == "discovery":
     sys.stdout.buffer.write(Path(os.environ["MOCK_CURL_DISCOVERY"]).read_bytes())
     raise SystemExit(0)
@@ -30,6 +36,10 @@ if mode == "interrupt":
     Path(output).write_bytes(data[:37])
     os.kill(os.getppid(), signal.SIGINT)
     raise SystemExit(130)
+if mode == "flaky" and attempt == 1:
+    Path(output).write_bytes(data[:37])
+    print("simulated transient failure", file=sys.stderr)
+    raise SystemExit(18)
 if mode == "partial":
     Path(output).write_bytes(data[:37])
     print("mock proxy error: PRIVATE_MARKER_MUST_NOT_LEAK", file=sys.stderr)

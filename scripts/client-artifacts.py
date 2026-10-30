@@ -21,6 +21,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -220,29 +221,48 @@ def _curl_options(maximum_size: int) -> list[str]:
     return [
         "curl", "--disable", "--fail", "--silent", "--show-error",
         "--proto", "=https", "--proto-redir", "=https", "--tlsv1.2",
-        "--connect-timeout", "15", "--max-time", "600", "--retry", "2",
-        "--retry-delay", "1", "--retry-max-time", "900", "--max-redirs", "0",
+        "--connect-timeout", "15", "--max-time", "1200", "--retry", "3",
+        "--retry-delay", "2", "--retry-max-time", "2400", "--retry-all-errors",
+        "--max-redirs", "0",
         "--max-filesize", str(maximum_size),
     ]
 
 
 def _download(url: str, destination: Path) -> None:
-    try:
-        result = subprocess.run(
-            _curl_options(PACKAGE_LIMIT)
-            + ["--output", str(destination), "--write-out", "%{http_code}", "--url", url],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            timeout=1800, check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise ArtifactError("curl download failed or timed out") from exc
-    if result.returncode != 0:
-        # Do not echo curl stderr: proxy configuration might contain credentials.
-        raise ArtifactError(f"curl download failed (exit {result.returncode})")
-    if result.stdout.strip() != "200":
-        raise ArtifactError("download did not return HTTP 200; redirects are not followed")
-    if destination.stat().st_size > PACKAGE_LIMIT:
-        raise ArtifactError("download exceeds package size limit")
+    """Download with resume.
+
+    The arm64 package is ~179 MB and the CDN is not always fast; a single
+    `--max-time` budget made CI flaky and left users re-downloading from zero.
+    Each attempt continues from whatever was already fetched, and only a
+    complete, correct file is ever published (verification happens later).
+    """
+    attempts = 3
+    last_code = ""
+    for attempt in range(1, attempts + 1):
+        options = _curl_options(PACKAGE_LIMIT)
+        resuming = destination.exists() and destination.stat().st_size > 0
+        if resuming:
+            options += ["--continue-at", "-"]
+        try:
+            result = subprocess.run(
+                options + ["--output", str(destination), "--write-out", "%{http_code}",
+                           "--url", url],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                timeout=1800, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise ArtifactError("curl download failed or timed out") from exc
+        last_code = result.stdout.strip()
+        if result.returncode == 0 and last_code in ("200", "206"):
+            if destination.stat().st_size > PACKAGE_LIMIT:
+                raise ArtifactError("download exceeds package size limit")
+            return
+        if result.returncode != 0 and attempt == attempts:
+            # Do not echo curl stderr: proxy configuration might contain credentials.
+            raise ArtifactError(f"curl download failed (exit {result.returncode})")
+        if attempt < attempts:
+            time.sleep(min(10, 2 ** attempt))
+    raise ArtifactError("download did not return HTTP 200/206; redirects are not followed")
 
 
 def _publish(manifest: dict[str, Any], arch: str, source: Path | None) -> Path:

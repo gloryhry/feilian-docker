@@ -356,6 +356,18 @@ class ArtifactTests(unittest.TestCase):
                 self.assertFalse(self.cache().exists())
                 self.assertEqual(list(self.cache().parent.glob("*.part")), [])
 
+    def test_truncated_transfer_is_resumed_instead_of_restarted(self) -> None:
+        # A ~179 MB package over a slow CDN link used to restart from zero on every
+        # retry, which made the arm64 CI job fail intermittently.
+        self.env.update({"MOCK_CURL_MODE": "flaky",
+                         "MOCK_CURL_COUNTER": str(self.root / "curl-attempts")})
+        self.cli("fetch", "--arch", "amd64")
+        calls = [json.loads(line) for line in self.log.read_text().splitlines()]
+        resumed = [c for c in calls if "--continue-at" in c]
+        self.assertTrue(resumed, "the retry did not ask curl to resume")
+        self.assertTrue(self.cache().exists())
+        self.assertEqual(self.cache().read_bytes(), (self.sources / "amd64.deb").read_bytes())
+
     def test_redirect_is_not_followed_or_published(self) -> None:
         self.env["MOCK_CURL_MODE"] = "redirect"
         result = self.cli("fetch", "--arch", "amd64", expected=2)
