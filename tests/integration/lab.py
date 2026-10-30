@@ -66,6 +66,10 @@ def query_bound(name, server, device, timeout=8):
     finally:
         s.close()
 
+import subprocess
+print('dnsmasq-proc:', subprocess.run(['ps', '-eo', 'user,pid,args'], capture_output=True, text=True).stdout.
+      replace(chr(10), ' ; ').split('/usr/sbin/dnsmasq')[-1][:120] if 'dnsmasq' in subprocess.run(['ps','-eo','args'],capture_output=True,text=True).stdout else 'absent')
+print('upstream-sockets:', subprocess.run(['ss','-uanp'], capture_output=True, text=True).stdout.replace(chr(10), ' ; ')[:400])
 print('via-corp-dns-bound:', query_bound('health.corp.test', '10.91.0.53', 'labtun0'))
 print('via-local-resolver:', query('health.corp.test', '127.0.0.1'))
 print('via-corp-dns:', query('health.corp.test', '10.91.0.53'))

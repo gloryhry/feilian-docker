@@ -97,7 +97,10 @@
     ```
   - 中继侧日志证明**去程到达**：`{"kind":"dns","name":"health.corp.test","source":"10.254.0.1"}` 共 6 条。即丢包发生在**回程**。
   - 已证伪：`bind-interfaces → bind-dynamic` 无效（`mock33`，已回退，不保留无证据改动）；用 `SO_BINDTODEVICE=labtun0` 手工构造的查询**能收到回包**（`via-corp-dns-bound: ok(50 bytes)`），说明设备绑定本身不是原因。
-  - **剩下的唯一疑点**：dnsmasq 进程的应答接收路径（其上游 socket 的源端口/源地址选择、或其自身的能力/降权行为），与手工 socket 不同。下一轮方向：在容器内以 `--log-queries --log-debug` 复现并对比 `ss -uanp` 下 dnsmasq 的 upstream socket 绑定，或改为“自管转发器 + dnsmasq 只做缓存”的兜底方案。
+  - 决定不再追这个黑盒，改走**自管转发器**（`runtime/dns_forward.py`，~230 行）：监听 `127.0.0.1:53`，直接消费 DNS 属主已渲染的同一份策略文件（`server=/corp.test/10.91.0.53@labtun0`、`server=/corp.test/` 表示封锁、裸 `server=` 为 bootstrap），按最长后缀匹配、`SO_BINDTODEVICE` 绑定、失败返回 SERVFAIL 而绝不回落公网。所有权校验沿用 `PidReloader`（可配置 exe/参数标记，仍校验 pid+netns+参数）。
+  - 期间修掉两个真实缺陷：SIGHUP 曾被当成退出信号（而属主正是用 SIGHUP 重载，导致重启风暴）；转发器早于策略文件启动会直接退出，现改为有界等待。
+  - **结果（`mock40`）**：`dns.connected_split` 与 `proxy.socks5h` **由 FAIL 转 PASS**，PASS 数升到 8。
+  - 剩余失败：`proxy.http` / `proxy.connect` 报 `Connection reset by peer`（privoxy 侧），而直连 SOCKS 的 `proxy.socks5h` 已通过 —— 下一轮聚焦 privoxy → microsocks 这一段。
   - 修复两处阻断验收的真实缺陷：(1) 探针镜像构建沿用统一 `BUILD_NETWORK`（本机默认网络 DNS 被透明代理打断）；(2) 隔离容器 `--cap-drop ALL` 失去 `DAC_OVERRIDE` 后读不了属主不同的 0600 测试证书，仅对一次性测试 TLS 材料放宽为 0644（每轮独立隔离网络内的临时材料）。
 - **仍未执行**：L2 其余包级断言（代理经测试 TUN、guard 阻断、DNS 分域切换、网关 SNAT/MSS 真实包）、`scripts/deploy.sh` 的 digest 升级/回滚演练、README 重写。
 - Git 作者身份已配置；非交互 git push --dry-run 预检 exit 0，远端可接受目标功能分支。未实际推送。GitHub CLI 不存在，不因此安装系统工具。

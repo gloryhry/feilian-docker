@@ -203,6 +203,7 @@ class SupervisorTests(unittest.TestCase):
         supervisor._bootstrap_plan()
         dnsmasq = supervisor.procs["dnsmasq"]
         self.assertEqual(dnsmasq.pid_file, self.state / "dnsmasq.pid")
+        self.assertIn("dns_forward.py", " ".join(dnsmasq.argv))
         # dnsmasq --no-daemon does not create a pid file itself; the supervisor is
         # the parent and must publish it or the DNS owner never activates.
         sup._atomic_text(self.state / "dnsmasq.pid", "4242\n", mode=0o600)

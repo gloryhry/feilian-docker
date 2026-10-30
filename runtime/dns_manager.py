@@ -139,9 +139,15 @@ class SyntaxRunner:
 
 class PidReloader:
     """Signal only dnsmasq in this netns, using the exact owned --conf-file."""
-    def __init__(self, pid_file: Path, conf_file: Path):
+    def __init__(self, pid_file: Path, conf_file: Path, exe: str = "dnsmasq",
+                 arg_marker: str = "--conf-file="):
         self.pid_file = pid_file
         self.conf_file = conf_file
+        # The split path may be served by this project's own forwarder; the
+        # ownership proof must then match that executable and its policy argument
+        # instead of dnsmasq's, while keeping the same strictness.
+        self.exe = exe
+        self.arg_marker = arg_marker
 
     def _pid(self):
         try:
@@ -152,15 +158,19 @@ class PidReloader:
             if pid <= 1 or pid > 2147483647:
                 return None
             proc = Path("/proc") / str(pid)
-            if Path(os.readlink(proc / "exe")).name != "dnsmasq":
+            exe_name = Path(os.readlink(proc / "exe")).name
+            # Interpreter paths carry a version suffix (python3.13); accept those
+            # while still refusing any unrelated binary.
+            if exe_name != self.exe and not (self.exe == "python3" and re.fullmatch(r"python3(\.\d+)?", exe_name)):
                 return None
             if (proc / "ns/net").stat().st_ino != Path("/proc/self/ns/net").stat().st_ino:
                 return None
             with (proc / "cmdline").open("rb") as stream:
                 args = stream.read(8193).split(b"\0")
             expected = os.fsencode(str(self.conf_file))
-            if b"--conf-file=" + expected not in args and not any(
-                args[i] in (b"-C", b"--conf-file") and args[i + 1] == expected
+            marker = os.fsencode(self.arg_marker) + expected
+            if marker not in args and not any(
+                args[i] in (marker, b"-C", b"--conf-file") and args[i + 1] == expected
                 for i in range(len(args) - 1)
             ):
                 return None
@@ -195,14 +205,24 @@ class PidReloader:
 
 class DNSManager:
     def __init__(self, state_dir="/run/feilian", resolv_path="/etc/resolv.conf",
-                 runner=None, reloader=None, network_mode="bridge", ifindex_resolver=None):
+                 runner=None, reloader=None, network_mode="bridge", ifindex_resolver=None,
+                 forwarder: bool = False):
         self.ifindex_resolver = ifindex_resolver or socket.if_nametoindex
         self.state_dir = Path(state_dir)
         self.resolv_path = Path(resolv_path)
         self.network_mode = network_mode
         self.runner = runner or SyntaxRunner()
-        self.reloader = reloader or PidReloader(self.state_dir / "dnsmasq.pid",
-                                               self.state_dir / "dnsmasq.conf")
+        if reloader is not None:
+            self.reloader = reloader
+        elif forwarder:
+            # Own forwarder: same pid-file/ownership proof, different executable and
+            # policy argument, plus it re-reads the policy on SIGHUP and on mtime.
+            self.reloader = PidReloader(self.state_dir / "dnsmasq.pid",
+                                        self.state_dir / "dnsmasq.servers",
+                                        exe="python3", arg_marker="--policy=")
+        else:
+            self.reloader = PidReloader(self.state_dir / "dnsmasq.pid",
+                                        self.state_dir / "dnsmasq.conf")
         self._lock_fd = None
         self._record = None
 

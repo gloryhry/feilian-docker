@@ -620,7 +620,8 @@ class Controller:
         self.resolver = resolver or DNSResolver()
         self.https = https_probe or HTTPSProbe()
         self.dns = dns_manager if dns_manager is not None else (
-            DNSManager(self.store.directory, network_mode=config.network_mode) if config else None)
+            DNSManager(self.store.directory, network_mode=config.network_mode,
+                       forwarder=os.environ.get("FEILIAN_DNS_FORWARDER", "1") == "1") if config else None)
         if not 1 <= success_required <= 10:
             raise ValueError("success_required must be 1..10")
         self.success_required = success_required

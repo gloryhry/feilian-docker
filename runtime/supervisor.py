@@ -253,13 +253,13 @@ class Supervisor:
             self.register("controller", [sys.executable, str(self.runtime_dir / "vpn_state.py"),
                                         "run", "--state-dir", str(self.state_dir)],
                           log="vpn-controller.log")
-            dns_args = ["dnsmasq", "--no-daemon",
-                        "--conf-file=" + str(self.state_dir / "dnsmasq.conf")]
-            # Opt-in query tracing: off by default (privacy and volume), but the
-            # only way to see whether a resolver actually received/forwarded a query.
-            if self.env.get("FEILIAN_DNS_DEBUG", "0") == "1":
-                dns_args += ["--log-queries", "--log-facility=-"]
-            self.register("dnsmasq", dns_args, log="dnsmasq.log",
+            # The split resolver is this project's own forwarder: it consumes the
+            # same policy file the DNS owner renders, so ownership/atomic-replace
+            # semantics are unchanged, while the upstream socket stays auditable.
+            dns_args = [sys.executable, str(self.runtime_dir / "dns_forward.py"),
+                        "--policy=" + str(self.state_dir / "dnsmasq.servers"),
+                        "--pid-file", str(self.state_dir / "dnsmasq.pid")]
+            self.register("dnsmasq", dns_args, log="dns-forward.log",
                           pid_file=self.state_dir / "dnsmasq.pid")
 
     def _sensitive(self, name):
