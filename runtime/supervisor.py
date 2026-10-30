@@ -311,7 +311,12 @@ class Supervisor:
         dns = [item for item in (evidence.get("dns_servers") or []) if isinstance(item, str)]
         return {
             "schema_version": 1, "project": self.env.get("PROJECT_NAME", "feilian"),
-            "network_mode": self.mode, "ready": False, "vpn_interface": interface,
+            # `ready`/`proxy_enabled` are what the policy modules turn into
+            # "proxy_ready". Omitting proxy_enabled silently produced a guard that
+            # only contained the uid drop, i.e. every proxy packet was refused.
+            "network_mode": self.mode, "ready": False,
+            "proxy_enabled": self.env.get("PROXY_ENABLED", "1") == "1",
+            "vpn_interface": interface,
             # evidence.vpn_ipv4 is already a bounded list; never nest it again.
             "vpn_ipv4": [item for item in (evidence.get("vpn_ipv4") or [])
                          if isinstance(item, str)],

@@ -76,7 +76,10 @@
   8. 修复**“状态 READY 但端口不监听”**：`open_data_plane` 现在启动代理后最多等 15 秒直到两个端口接受 TCP 连接，超时则撤下并记 `proxy_listen_timeout`，绝不提前报 ready。
   9. `scripts/status.sh` 增加 `data_plane` 与 `proxy_usable`（= VPN ready 且数据面 ready），把“能用代理”变成可观测信号。
   10. 套件侧：代理断言改为先等数据面就绪；失败行现在携带 curl/getent 的真实报错（不再只有布尔）。
-- **L2 当前结果（`mock24`）**：7 项 PASS（含真实内核 TUN、断隧道 no-fallback、断开时不回落公网 DNS、owned-only 清理）；`proxy.http/connect` 报 `Recv failure: Connection reset by peer`、`proxy.socks5h` 报 `cannot complete SOCKS5 connection (1)`、`dns.connected_split` getent 为空 —— 三者指向同一处：**dnsmasq 分域转发到 `10.91.0.53@labtun0` 未生效**，microsocks 解析不了企业域名因而连不上上游。下一轮从这里继续。
+- **L2 当前结果（`mock24`）**：7 项 PASS（含真实内核 TUN、断隧道 no-fallback、断开时不回落公网 DNS、owned-only 清理）；`proxy.http/connect` 报 `Recv failure: Connection reset by peer`、`proxy.socks5h` 报 `cannot complete SOCKS5 connection (1)`、`dns.connected_split` getent 为空 —— 三者曾指向同一处。
+  11. 修复**守卫未放行代理 UID**：`egress_policy.render_policy` 用 `context["proxy_ready"]` 决定是否写放行规则，而 supervisor 的 context 从没提供 `proxy_enabled`，导致生成的守卫**只有两条 drop**（`meta skuid {1001,1002} drop`），代理所有出站（含 127.0.0.1:53 DNS）被一把全拒。现已显式传入 `proxy_enabled`。
+  12. 记录一处**取证陷阱**：上述 `nft list` 是在套件结束、数据面已关闭之后看的，当时守卫已被重渲染成 closed 版（只有 drop）。因此“规则缺失”不能由该现场直接推断，需要在数据面开启窗口内取证。
+  - dnsmasq 日志显示分域转发**确实生效过**（`using nameserver 10.91.0.53#53 for domain corp.test`），随后随断线故障回退为 `using only locally-known addresses for corp.test`——符合设计。故 `getent`/SOCKS 失败的根因仍在“企业 DNS 应答或回程”这一段，下一轮在数据面开启窗口内直接对 `10.91.0.53` 发一次查询取证。
   - 修复两处阻断验收的真实缺陷：(1) 探针镜像构建沿用统一 `BUILD_NETWORK`（本机默认网络 DNS 被透明代理打断）；(2) 隔离容器 `--cap-drop ALL` 失去 `DAC_OVERRIDE` 后读不了属主不同的 0600 测试证书，仅对一次性测试 TLS 材料放宽为 0644（每轮独立隔离网络内的临时材料）。
 - **仍未执行**：L2 其余包级断言（代理经测试 TUN、guard 阻断、DNS 分域切换、网关 SNAT/MSS 真实包）、`scripts/deploy.sh` 的 digest 升级/回滚演练、README 重写。
 - Git 作者身份已配置；非交互 git push --dry-run 预检 exit 0，远端可接受目标功能分支。未实际推送。GitHub CLI 不存在，不因此安装系统工具。
