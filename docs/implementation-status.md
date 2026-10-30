@@ -20,7 +20,7 @@
 | G4 双代理/guard | IN_PROGRESS | 渲染器+单元测试；数据面未在隔离网络实跑。 |
 | G5 网关/MSS/清理 | IN_PROGRESS | 渲染器已实现；真实 SNAT/MSS 包级验收未做。 |
 | G6 CI/回滚 | IN_PROGRESS | 工作流已在远端真实运行并发布双架构镜像；`scripts/deploy.sh` digest 升级/回滚已实现（8 项离线测试），真实卷演练待做。 |
-| G7 集成/GitHub/GHCR | PUBLISHED | 分支 + 标签已推送；双架构镜像已发布到私有 GHCR 并按 digest 验证。 |
+| G7 集成/GitHub/GHCR | PUBLISHED | 分支 + 标签已推送；含全部修复的双架构镜像已发布到私有 GHCR 并按 digest 验证。 |
 
 ## 执行记录
 

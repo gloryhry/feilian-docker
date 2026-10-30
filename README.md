@@ -201,8 +201,9 @@ bash verify/all.sh --suite mock        # 需要 Docker；使用隔离网络与�
 - 镜像：`ghcr.io/gloryhry/feilian-docker`（**私有**）
 - 发布方式：推送 `release-v*` 标签触发 `.github/workflows/client-release.yml`，在**原生 amd64 + arm64** runner 上
   分别构建并做真实客户端无账号冒烟，再合成多架构 index；默认不推 `latest`
-- 最近一次发布：索引 `sha256:724a9177f96941590b8e420999fd3e9105d1357b6f9f8bdfb8f38000c3b28a36`
-  （amd64 `43163c5e…`、arm64 `0a1eca3c…`），匿名拉取被拒（401），按 digest 拉取成功
+- 最近一次发布：`v3.2.16-r8362-r5`，索引
+  `sha256:2588a5e5128cc004fd30e174ff98b8a5c32ca561307296d5babf3f78ec90862f`
+  （amd64 `a6bd657c…`、arm64 `708a86cc…`），匿名拉取被拒（401），按 digest 拉取成功
 
 > 官方客户端为第三方专有软件。发布镜像前请自行确认所在组织的再分发许可；
 > 本仓库默认不公开分发客户端镜像。
