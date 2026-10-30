@@ -119,8 +119,21 @@ def _qname(query: bytes):
 
 
 def _servfail(query: bytes) -> bytes:
+    """Build a SERVFAIL without depending on the query being well formed.
+
+    This used to re-parse the query to copy the question section, so a malformed
+    datagram made the error path raise again — killing the forwarder and with it
+    every lookup in the container.
+    """
+    if len(query) < 2:
+        return b""  # cannot echo a transaction id: drop instead of answering
     flags = 0x8182  # response, recursion desired available, SERVFAIL
-    return query[:2] + struct.pack("!HHHHH", flags, 1, 0, 0, 0) + query[12:_qname(query)[1]]
+    try:
+        question = query[12:_qname(query)[1]]
+    except PolicyError:
+        question = b""
+    header = struct.pack("!HHHHH", flags, 1 if question else 0, 0, 0, 0)
+    return query[:2] + header + question
 
 
 def _nxdomain(query: bytes) -> bytes:
@@ -212,10 +225,16 @@ def serve(policy_path: Path, listen: str = "127.0.0.1", port: int = 53, stop_aft
                 stamp = policy_path.stat().st_mtime
         except OSError:
             pass
+        except PolicyError:
+            # Keep serving with the last known good policy rather than dying on a
+            #半写/非法文件.
+            pass
         try:
             name, _ = _qname(query)
         except PolicyError:
-            server.sendto(_servfail(query), peer)
+            malformed = _servfail(query)
+            if malformed:
+                server.sendto(malformed, peer)
             continue
         address, iface, blocked = select_upstream(policy, name)
         if blocked:

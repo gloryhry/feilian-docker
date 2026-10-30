@@ -198,6 +198,29 @@ class SupervisorTests(unittest.TestCase):
         cleanup = [c.args[0] for c in supervisor._run_tool.call_args_list][-1]
         self.assertEqual(cleanup[2], "cleanup")
 
+    def test_gui_keeps_electron_flags_in_argv(self):
+        supervisor = self.supervisor(START_GUI="1", GUI_MODE="vnc")
+        supervisor._bootstrap_plan()
+        gui = supervisor.procs["gui"]
+        # The client does not read an env var for these; without --no-sandbox
+        # Electron refuses to start in a container that blocks user namespaces.
+        self.assertIn("--no-sandbox", gui.argv)
+        self.assertIn("--disable-gpu", gui.argv)
+        self.assertNotIn("FEILIAN_GUI_ARGS", gui.kwargs.get("env_extra", {}))
+
+    def test_crashing_child_backs_off_instead_of_restarting_every_tick(self):
+        supervisor = self.supervisor()
+        supervisor._bootstrap_plan()
+        proc = supervisor.procs["nginx"]
+        proc.start()
+        proc.pid = 4242
+        proc.poll = mock.Mock(return_value=1)      # started, then died rc=1
+        proc._reap = mock.Mock(  # keep the fake pid bookkeeping simple
+            side_effect=lambda: (setattr(proc, "pid", 0), setattr(proc, "handle", None)))
+        supervisor.sync_processes()
+        self.assertEqual(proc.failures, 1)
+        self.assertGreater(proc.next_try, time.time() - 1)
+
     def test_dnsmasq_pid_file_is_published_for_the_dns_owner(self):
         supervisor = self.supervisor()
         supervisor._bootstrap_plan()

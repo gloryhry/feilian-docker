@@ -256,13 +256,17 @@ class Supervisor:
                 "--web=/usr/share/novnc", f"127.0.0.1:{vnc_port}"], log="novnc.log")
         self.register("nginx", ["nginx", "-c", str(WEB_DIR / "nginx.conf")], log="nginx.log")
         if self.env.get("START_GUI", "1") == "1":
-            self.register("gui", [str(APP_DIR / "corplink")], user=GUI_USER, log="corplink-gui.log",
+            # The Electron flags must be real argv: the client never reads an
+            # environment variable for them, and a container without user
+            # namespaces refuses to start Electron unless the sandbox is disabled.
+            gui_args = [str(APP_DIR / "corplink"), "--no-sandbox"]
+            gui_args += (self.env.get("EXTRA_GUI_ARGS",
+                                      "--disable-gpu --disable-dev-shm-usage").split())
+            self.register("gui", gui_args, user=GUI_USER, log="corplink-gui.log",
                           env_extra={
                               "HOME": "/home/feilian", "DISPLAY": display,
                               "XDG_RUNTIME_DIR": "/run/user/1000",
-                              "ELECTRON_DISABLE_SECURITY_WARNINGS": "1",
-                              "FEILIAN_GUI_ARGS": self.env.get("EXTRA_GUI_ARGS",
-                                  "--disable-gpu --disable-dev-shm-usage")})
+                              "ELECTRON_DISABLE_SECURITY_WARNINGS": "1"})
         if self.managed:
             self.register("controller", [sys.executable, str(self.runtime_dir / "vpn_state.py"),
                                         "run", "--state-dir", str(self.state_dir)],
@@ -291,6 +295,12 @@ class Supervisor:
                 # that dies on startup used to look exactly like "it is running".
                 if not self.stop_requested and not self.draining:
                     self.notes.append(f"{name}_exited_rc{code}")
+                    if code != 0:
+                        # A child that starts and *then* dies is the common crash
+                        # shape; resetting failures on a successful fork made the
+                        # supervisor restart it every tick with no backoff.
+                        proc.failures += 1
+                        proc.next_try = now + min(30.0, 2.0 ** min(proc.failures, 4))
             if not proc.pid and now >= proc.next_try and not self.stop_requested:
                 if name in ("controller", "dnsmasq") and not self.managed:
                     continue

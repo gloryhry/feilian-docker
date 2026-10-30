@@ -88,6 +88,15 @@ class MessageTests(unittest.TestCase):
         with self.assertRaises(fwd.PolicyError):
             fwd._qname(b"\x00\x01")
 
+    def test_servfail_survives_a_malformed_query(self):
+        # A malformed datagram used to make the error path re-parse the query and
+        # raise, killing the forwarder process outright.
+        self.assertEqual(fwd._servfail(b""), b"")  # nothing to echo back
+        for bad in (b"\x00\x01\x02", b"\xff" * 4, b"\x12\x34garbage"):
+            with self.subTest(bad=bad):
+                reply = fwd._servfail(bad)
+                self.assertEqual(reply[2:4], b"\x81\x82")
+
     def test_forward_returns_only_matching_transaction(self):
         policy_sock = mock.Mock()
         policy_sock.recvfrom.side_effect = [(b"\x99\x99stray", ("1.1.1.1", 53)),
