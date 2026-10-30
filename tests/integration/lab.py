@@ -116,7 +116,8 @@ class Lab:
             result = self.driver.docker(*command, "--name", name, "--label", OWNER + "=" + self.owner, *arguments)
         else:
             result = self.driver.docker(*command, "--label", OWNER + "=" + self.owner, *arguments, name)
-        self.resources.append((kind, name))
+        if (kind, name) not in self.resources:
+            self.resources.append((kind, name))
         return result
 
     def inspect(self, kind, name):
@@ -135,7 +136,7 @@ class Lab:
                     ok = False  # Never delete a resource somebody else replaced.
                     continue
                 command = ("rm", "--force", name) if kind == "container" else (kind, "rm", name)
-                self.driver.docker(*command)
+                self.driver.docker(*command, check=False)
             except Exception:
                 ok = False
         self.driver.report.add("cleanup.owned_resources", "PASS" if ok else "FAIL", "exact_owner_only_no_global_prune")
@@ -181,7 +182,7 @@ class Lab:
         info = self.inspect("container", self.names[role])
         return info["NetworkSettings"]["Networks"][self.names[network]]["IPAddress"]
 
-    def app(self, suite):
+    def app(self, suite, overrides=None):
         args = ["--network", self.names["bootstrap-net"], "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
                 "--device", "/dev/net/tun:/dev/net/tun", "--shm-size", "256m"]
         for capability in ("CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "KILL", "SETGID", "SETUID", "SETPCAP", "NET_BIND_SERVICE", "NET_RAW", "SYS_CHROOT", "MKNOD", "AUDIT_WRITE", "SETFCAP", "NET_ADMIN"):
@@ -197,6 +198,7 @@ class Lab:
                        VPN_PROBE_URL="https://health.corp.test/health", VPN_PROBE_CA_FILE="/run/lab-ca.crt")
         else:
             env.update(CORP_DOMAINS="", CORP_CIDRS="", VPN_PROBE_DNS_NAME="", VPN_PROBE_URL="", DNS_MODE="off", PROXY_ENABLED="0", GUARD_ENABLED="0")
+        env.update(overrides or {})
         for key, value in env.items():
             args += ["--env", key + "=" + value]
         self.add("container", self.names["app"], *args, self.image)
@@ -265,6 +267,12 @@ class Lab:
                  "--mount", f"type=volume,source={self.names['data']},target=/labstate",
                  "--entrypoint", "tcpdump", self.probe, "-i", "eth0", "-p", "-nn", "-U", "-w", "/labstate/bootstrap.pcap", "not", "udp", "port", "4242")
         self.driver.docker("start", self.names["capture"])
+
+    def corp_counter(self, name):
+        code = ("import json,pathlib; p=pathlib.Path('/labstate/corp.jsonl'); "
+                "print(sum(1 for l in p.read_text().splitlines() if json.loads(l).get('kind')=='dns' "
+                "and json.loads(l).get('name')=='" + name + "') if p.exists() else 0)")
+        return int(self.driver.docker("exec", self.names["relay"], "python3", "-c", code).stdout)
 
     def counter(self, name="health.corp.test"):
         code = ("import json,pathlib; p=pathlib.Path('/labstate/bootstrap.jsonl'); "
@@ -397,9 +405,32 @@ class Lab:
             report.add("cleanup.foreign_marker", "FAIL",
                        "cleanup_probe_failed_" + type(exc).__name__.lower())
 
+        # DNS full mode: every name (not only corporate ones) must go to the VPN
+        # resolver. Recreate the app with DNS_MODE=full and re-establish the tunnel.
+        try:
+            self.driver.docker("rm", "--force", self.names["app"], check=False)
+            self.app("mock", {"DNS_MODE": "full", "CORP_DOMAINS": ""})
+            self.tunnel()
+            self.wait_status(True)
+            policy = self.driver.docker("exec", self.names["app"], "cat",
+                                        "/run/feilian/dnsmasq.servers", check=False).stdout.decode("utf-8", "replace")
+            defaults = [line for line in policy.splitlines()
+                        if line.startswith("server=") and "/" not in line]
+            full_ok = (len(defaults) == 1 and "10.91.0.53" in defaults[0]
+                       and "labtun0" in defaults[0] and "127.0.0.11" not in policy)
+            before = self.corp_counter("example.test")
+            self.driver.docker("exec", self.names["app"], "getent", "ahostsv4", "example.test",
+                               timeout=15, check=False)
+            via_vpn = self.corp_counter("example.test") > before
+            report.add("dns.full_mode", "PASS" if full_ok and via_vpn else "FAIL",
+                       "all_names_forwarded_to_vpn_resolver" if full_ok and via_vpn else
+                       "defaults=%r vpn_queries_seen=%s" % (defaults, via_vpn))
+        except Exception as exc:
+            report.add("dns.full_mode", "FAIL", "full_mode_probe_failed_" + type(exc).__name__.lower())
+
         # Explicitly unfinished acceptance gates: do not let a partial test lab
         # turn these into successful or optional checks.
-        for name in ("gateway.snat", "gateway.syn_mss", "auth.tls_wss", "fault.old_tcp", "dns.full_mode"):
+        for name in ("gateway.snat", "gateway.syn_mss", "auth.tls_wss", "fault.old_tcp"):
             report.add(name, "FAIL", "NOT_IMPLEMENTED")
 
 

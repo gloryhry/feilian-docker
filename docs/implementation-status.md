@@ -142,11 +142,12 @@
     PASS  fault.controller_exit
     PASS  packets.no_plain_corporate_bootstrap
     PASS  cleanup.owned_resources / diag.data_plane_window
-    FAIL(NOT_IMPLEMENTED) gateway.snat / gateway.syn_mss / auth.tls_wss
-                          fault.old_tcp / dns.full_mode
+    FAIL(NOT_IMPLEMENTED) gateway.snat / gateway.syn_mss / auth.tls_wss / fault.old_tcp
     ```
   - 新增并通过 `cleanup.foreign_marker`：在 app netns 里造一张**外来** nft 表，执行 `egress_policy.py cleanup` 后断言外来表仍在、自有 `feilian_guard` 已移除 —— 这才让“清理是安全的”成为可验证事实，而不是口号。
-  - **L2 当前（`mock58`）：17 项 PASS / 5 项 NOT_IMPLEMENTED**。剩余按成本排序补齐：`dns.full_mode`（需以 full 模式重启 app）→ `fault.old_tcp`（旧连接重路由）→ `auth.tls_wss`（秘密卷 + TLS/WebSocket）→ `gateway.snat` / `gateway.syn_mss`（网关转发与 SYN MSS 实测）。
+  - 新增并通过 `dns.full_mode`：以 `DNS_MODE=full` 重建 app 并重建隧道，断言策略里**唯一默认上游**是 `10.91.0.53@labtun0`、公共 bootstrap 上游完全消失，且一个**非企业域名** `example.test` 确实在企业解析器上出现查询计数（经由 relay 侧日志证实），证明全 DNS 模式真的把所有名字送进隧道解析器。
+  - 期间修掉夹具簿记缺陷：重建容器会被重复登记，导致 `cleanup.owned_resources` 误判；以及移除时对“已被探针删掉”的资源报错。现按 (kind,name) 去重，且移除仅在**已校验所有权**后容错执行。
+  - **L2 当前（`mock61`）：18 项 PASS / 4 项 NOT_IMPLEMENTED**。剩余：`fault.old_tcp`（旧连接在撤路由后不得重路由）→ `auth.tls_wss`（秘密卷 + TLS/WebSocket 端到端）→ `gateway.snat` / `gateway.syn_mss`（网关 SNAT 与 SYN MSS 实测）。
   - 修复两处阻断验收的真实缺陷：(1) 探针镜像构建沿用统一 `BUILD_NETWORK`（本机默认网络 DNS 被透明代理打断）；(2) 隔离容器 `--cap-drop ALL` 失去 `DAC_OVERRIDE` 后读不了属主不同的 0600 测试证书，仅对一次性测试 TLS 材料放宽为 0644（每轮独立隔离网络内的临时材料）。
 - **仍未执行**：L2 其余包级断言（代理经测试 TUN、guard 阻断、DNS 分域切换、网关 SNAT/MSS 真实包）、`scripts/deploy.sh` 的 digest 升级/回滚演练、README 重写。
 - Git 作者身份已配置；非交互 git push --dry-run 预检 exit 0，远端可接受目标功能分支。未实际推送。GitHub CLI 不存在，不因此安装系统工具。
