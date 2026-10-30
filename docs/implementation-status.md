@@ -79,7 +79,17 @@
 - **L2 当前结果（`mock24`）**：7 项 PASS（含真实内核 TUN、断隧道 no-fallback、断开时不回落公网 DNS、owned-only 清理）；`proxy.http/connect` 报 `Recv failure: Connection reset by peer`、`proxy.socks5h` 报 `cannot complete SOCKS5 connection (1)`、`dns.connected_split` getent 为空 —— 三者曾指向同一处。
   11. 修复**守卫未放行代理 UID**：`egress_policy.render_policy` 用 `context["proxy_ready"]` 决定是否写放行规则，而 supervisor 的 context 从没提供 `proxy_enabled`，导致生成的守卫**只有两条 drop**（`meta skuid {1001,1002} drop`），代理所有出站（含 127.0.0.1:53 DNS）被一把全拒。现已显式传入 `proxy_enabled`。
   12. 记录一处**取证陷阱**：上述 `nft list` 是在套件结束、数据面已关闭之后看的，当时守卫已被重渲染成 closed 版（只有 drop）。因此“规则缺失”不能由该现场直接推断，需要在数据面开启窗口内取证。
-  - dnsmasq 日志显示分域转发**确实生效过**（`using nameserver 10.91.0.53#53 for domain corp.test`），随后随断线故障回退为 `using only locally-known addresses for corp.test`——符合设计。故 `getent`/SOCKS 失败的根因仍在“企业 DNS 应答或回程”这一段，下一轮在数据面开启窗口内直接对 `10.91.0.53` 发一次查询取证。
+  - dnsmasq 日志显示分域转发**确实生效过**（`using nameserver 10.91.0.53#53 for domain corp.test`），随后随断线故障回退为 `using only locally-known addresses for corp.test`——符合设计。
+  13. 实现**企业上游绑定隧道接口**：`dns_manager` 现在渲染 `server=/corp.test/10.91.0.53@labtun0`（公共 bootstrap 上游不绑）。单元测试同步固定“企业上游绑接口、公共上游不绑”的契约。
+  14. 套件新增**数据面窗口内取证**（避免再次在关闭后误判）。`mock31` 关键证据：
+      ```
+      servers-file: server=127.0.0.11 | server=/corp.test/10.91.0.53@labtun0   ← 配置正确
+      via-corp-dns: ok(50 bytes)        ← 直连企业 DNS 正常
+      tcp-corp-443: ok                  ← 隧道与回程正常
+      via-local-resolver: TimeoutError  ← dnsmasq 对 127.0.0.1:53 不回答（12s 超时）
+      ```
+  - 已排除的假设：dnsmasq 配置错误（文件内容正确）、dnsmasq 因 `@labtun0` 崩溃（单独容器用同一配置启动正常、不退出）、接口未就绪（窗口内接口存在且直连可用）。
+  - **下一轮决定性动作**：给生成的 dnsmasq 配置临时加 `log-queries`，确认它是否收到该查询、转发到哪个上游、以及出站是否被丢弃——这是目前唯一还没被证伪的环节。
   - 修复两处阻断验收的真实缺陷：(1) 探针镜像构建沿用统一 `BUILD_NETWORK`（本机默认网络 DNS 被透明代理打断）；(2) 隔离容器 `--cap-drop ALL` 失去 `DAC_OVERRIDE` 后读不了属主不同的 0600 测试证书，仅对一次性测试 TLS 材料放宽为 0644（每轮独立隔离网络内的临时材料）。
 - **仍未执行**：L2 其余包级断言（代理经测试 TUN、guard 阻断、DNS 分域切换、网关 SNAT/MSS 真实包）、`scripts/deploy.sh` 的 digest 升级/回滚演练、README 重写。
 - Git 作者身份已配置；非交互 git push --dry-run 预检 exit 0，远端可接受目标功能分支。未实际推送。GitHub CLI 不存在，不因此安装系统工具。

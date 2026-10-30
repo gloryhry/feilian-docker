@@ -98,9 +98,11 @@ class DNSManagerTests(unittest.TestCase):
         servers = self.servers()
         for domain in ("corp.test", "office.test"):
             for address in ("10.20.0.53", "10.20.0.54"):
-                self.assertIn(f"server=/{domain}/{address}\n", servers)
+                self.assertIn(f"server=/{domain}/{address}@{self.interface}\n", servers)
         self.assertNotIn("server=/test/", servers)
+        # Bootstrap resolvers are never pinned to the tunnel interface.
         self.assertIn("server=127.0.0.11\n", servers)
+        self.assertNotIn("127.0.0.11@", servers)
         self.assertEqual(self.resolv.stat().st_ino, self.inode)
         self.assertEqual(self.reloader.calls, 1)
         self.apply(True, ("10.20.0.53", "10.20.0.54"), ("corp.test", "office.test"))
@@ -117,7 +119,7 @@ class DNSManagerTests(unittest.TestCase):
 
     def test_full_connected_uses_only_vpn_general_servers(self):
         self.apply(True, ("10.20.0.53", "10.20.0.54"), mode="full")
-        self.assertIn("server=10.20.0.53\nserver=10.20.0.54\n", self.servers())
+        self.assertIn(f"server=10.20.0.53@{self.interface}\nserver=10.20.0.54@{self.interface}\n", self.servers())
         self.assertNotIn("127.0.0.11", self.servers())
         self.apply(mode="full")
         self.assertIn("server=127.0.0.11\n", self.servers())

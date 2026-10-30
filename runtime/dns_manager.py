@@ -375,11 +375,17 @@ class DNSManager:
                 f"pid-file={self.state_dir / 'dnsmasq.pid'}\n"
                 f"servers-file={self.state_dir / 'dnsmasq.servers'}\n").encode()
         lines = ["# Owned by feilian; SIGHUP rereads this file and clears the cache."]
+        # Corporate upstreams are pinned to the tunnel interface with dnsmasq's
+        # `@interface` suffix. Without it the resolver binds the *outgoing* source
+        # to its loopback listen address (bind-interfaces), the reply can never
+        # return, and every corporate lookup times out even though a socket-level
+        # query over the same route succeeds.
+        pin = "@" + vpn_interface if connected and vpn_interface else ""
         general = vpn if connected and mode == "full" else bootstrap
-        lines.extend("server=" + address for address in general)
+        lines.extend("server=" + address + (pin if general is vpn else "") for address in general)
         for domain in domains:
             if connected:
-                lines.extend(f"server=/{domain}/{address}" for address in vpn)
+                lines.extend(f"server=/{domain}/{address}{pin}" for address in vpn)
             else:
                 lines.append(f"server=/{domain}/")
         servers = ("\n".join(lines) + "\n").encode()

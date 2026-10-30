@@ -27,6 +27,38 @@ class LabError(Exception):
     pass
 
 
+DNS_DIAG = r"""
+import socket, struct, sys
+
+def query(name, server, timeout=12):
+    tid = 0x4242
+    q = struct.pack('!HHHHHH', tid, 0x0100, 1, 0, 0, 0)
+    for label in name.split('.'):
+        q += bytes([len(label)]) + label.encode()
+    q += b'\x00' + struct.pack('!HH', 1, 1)
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.settimeout(timeout)
+    try:
+        s.sendto(q, (server, 53))
+        data, _ = s.recvfrom(512)
+        return 'ok(%d bytes)' % len(data)
+    except Exception as exc:
+        return '%s: %s' % (type(exc).__name__, exc)
+    finally:
+        s.close()
+
+print('servers-file:', open('/run/feilian/dnsmasq.servers').read().strip().replace(chr(10), ' | '))
+print('via-local-resolver:', query('health.corp.test', '127.0.0.1'))
+print('via-corp-dns:', query('health.corp.test', '10.91.0.53'))
+try:
+    c = socket.create_connection(('10.91.0.80', 443), timeout=3)
+    print('tcp-corp-443: ok')
+    c.close()
+except Exception as exc:
+    print('tcp-corp-443:', type(exc).__name__, exc)
+"""
+
+
 class Lab:
     def __init__(self, driver, args):
         self.driver, self.args = driver, args
@@ -212,6 +244,12 @@ class Lab:
         self.tunnel()
         ready = self.wait_status(True)
         self.wait_data_plane()
+        # Diagnose the DNS/return path while the data plane is still open; after
+        # the fault steps the plane is closed and any inspection is misleading.
+        diag = self.driver.docker("exec", self.names["app"], "python3", "-c", DNS_DIAG, check=False)
+        report.add("diag.data_plane_window",
+                   "PASS" if diag.returncode == 0 else "FAIL",
+                   (diag.stdout or diag.stderr).decode("utf-8", "replace").strip()[:300], required=False)
         report.add("mock.real_kernel_tun", "PASS" if ready.get("evidence", {}).get("interface") == "labtun0" else "FAIL", "test_udp_transport_not_official_vpn")
         for name, proxy, url in (("http", "http://127.0.0.1:8118", "http://health.corp.test/health"),
                                  ("connect", "http://127.0.0.1:8118", "https://health.corp.test/health"),
