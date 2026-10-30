@@ -131,6 +131,21 @@
                      / fault.controller_exit / dns.full_mode / cleanup.foreign_marker
     ```
     未实现的检查**如实标为 NOT_IMPLEMENTED 并计为失败**，没有被放过。
+  - 继续修复两处夹具缺陷并补一项真实断言：抓包读取时 tcpdump 会尝试降权（`Couldn't change to 'tcpdump' uid=100`），隔离容器 `--cap-drop ALL` 下失败，改用 `-Z root`；断言原本在**宿主机**上探测 127.0.0.1 而非容器内，导致误判，已改为容器内探测。
+  - 新增并通过 `fault.controller_exit`：杀掉 `vpn_state.py` 后，数据面必须在有界时间内关闭、两个代理端口必须停止接受连接（fail-closed）。
+  - **L2 当前（`mock57`）：16 项 PASS / 6 项 NOT_IMPLEMENTED**
+    ```
+    PASS  mock.kind / mock.waiting_auth / proxy.before_ready / mock.real_kernel_tun
+    PASS  proxy.http / proxy.connect / proxy.socks5h
+    PASS  dns.connected_split / dns.disconnected_no_public_fallback
+    PASS  fault.interface_down / fault.route_withdrawn / fault.ipv6_literal
+    PASS  fault.controller_exit
+    PASS  packets.no_plain_corporate_bootstrap
+    PASS  cleanup.owned_resources / diag.data_plane_window
+    FAIL(NOT_IMPLEMENTED) gateway.snat / gateway.syn_mss / auth.tls_wss
+                          fault.old_tcp / dns.full_mode / cleanup.foreign_marker
+    ```
+    下一步按此清单逐个补齐：`dns.full_mode`、`cleanup.foreign_marker` 成本最低，随后 `fault.old_tcp`、`auth.tls_wss`，最后是网关 SNAT/MSS。
   - 修复两处阻断验收的真实缺陷：(1) 探针镜像构建沿用统一 `BUILD_NETWORK`（本机默认网络 DNS 被透明代理打断）；(2) 隔离容器 `--cap-drop ALL` 失去 `DAC_OVERRIDE` 后读不了属主不同的 0600 测试证书，仅对一次性测试 TLS 材料放宽为 0644（每轮独立隔离网络内的临时材料）。
 - **仍未执行**：L2 其余包级断言（代理经测试 TUN、guard 阻断、DNS 分域切换、网关 SNAT/MSS 真实包）、`scripts/deploy.sh` 的 digest 升级/回滚演练、README 重写。
 - Git 作者身份已配置；非交互 git push --dry-run 预检 exit 0，远端可接受目标功能分支。未实际推送。GitHub CLI 不存在，不因此安装系统工具。

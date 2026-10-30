@@ -17,6 +17,7 @@ import json
 import os
 from pathlib import Path
 import re
+import socket
 import time
 
 OWNER = "io.feilian.test.owner"
@@ -318,13 +319,64 @@ class Lab:
         report.add("fault.route_withdrawn", "PASS" if self.curl("socks5h://127.0.0.1:1080", expected=False) else "FAIL", "no_proxy_reroute_to_bootstrap")
         report.add("fault.ipv6_literal", "PASS" if self.curl("socks5h://127.0.0.1:1080", "https://[fd00:91::80]/", expected=False) else "FAIL", "unsupported_ipv6_proxy_path_rejected")
         self.driver.docker("stop", "--time", "3", self.names["capture"])
-        packet = self.driver.docker("exec", self.names["consumer"], "tcpdump", "-nn", "-r", "/labstate/bootstrap.pcap", "net", CORP, check=False)
-        parsed = packet.returncode == 0
-        report.add("packets.no_plain_corporate_bootstrap", "PASS" if parsed and not packet.stdout.strip() else "FAIL", "container_netns_capture_excludes_test_udp_outer")
+        packet = self.driver.docker("exec", self.names["consumer"], "tcpdump", "-Z", "root", "-nn", "-r",
+                "/labstate/bootstrap.pcap", "net", CORP, check=False)
+        parsed = packet.returncode == 0 and not packet.stdout.strip()
+        detail = "container_netns_capture_excludes_test_udp_outer" if parsed else (
+            "tcpdump_rc=%d out=%r err=%r" % (packet.returncode,
+                                             packet.stdout.decode("utf-8", "replace")[:160],
+                                             packet.stderr.decode("utf-8", "replace")[:160]))
+        report.add("packets.no_plain_corporate_bootstrap", "PASS" if parsed else "FAIL", detail)
         self.driver.docker("cp", self.names["consumer"] + ":/labstate/bootstrap.pcap", str(self.state / "bootstrap.pcap"))
+        try:
+            # Killing the readiness controller must fail closed: the data plane has to
+            # close and the proxies must stop, without waiting for a graceful drain.
+            self.driver.docker("exec", self.names["app"], "pkill", "-f", "vpn_state.py", check=False)
+            closed = False
+            for _ in range(60):
+                try:
+                    state = json.loads(self.driver.docker(
+                        "exec", self.names["app"], "cat", "/run/feilian/runtime.json").stdout)
+                    if state.get("data_plane") == "closed":
+                        closed = True
+                        break
+                except Exception:
+                    pass
+                time.sleep(0.5)
+            # Probe inside the container: testing 127.0.0.1 from the host would
+            # measure the host's own ports, not the app's data plane.
+            listener = ("import socket,sys\n"
+                        "open_ports=[]\n"
+                        "for p in (8118,1080):\n"
+                        "    s=socket.socket()\n"
+                        "    s.settimeout(1)\n"
+                        "    try:\n"
+                        "        s.connect((chr(49)+chr(50)+chr(55)+chr(46)+chr(48)+chr(46)+chr(48)+chr(46)+chr(49),p)); open_ports.append(p)\n"
+                        "    except OSError:\n"
+                        "        pass\n"
+                        "    finally:\n"
+                        "        s.close()\n"
+                        "print(open_ports)\n")
+            ports_closed = False
+            for _ in range(20):
+                probe = self.driver.docker("exec", self.names["app"], "python3", "-c", listener, check=False)
+                if probe.returncode == 0 and probe.stdout.strip() in (b"[]", "[]"):
+                    ports_closed = True
+                    break
+                time.sleep(0.5)
+            report.add("fault.controller_exit",
+                       "PASS" if closed and ports_closed else "FAIL",
+                       "controller_death_closes_data_plane_and_proxies"
+                       if closed and ports_closed else
+                       "closed=%s ports_closed=%s" % (closed, ports_closed))
+
+        except Exception as exc:
+            report.add("fault.controller_exit", "FAIL",
+                       "controller_exit_probe_failed_" + type(exc).__name__.lower())
+
         # Explicitly unfinished acceptance gates: do not let a partial test lab
         # turn these into successful or optional checks.
-        for name in ("gateway.snat", "gateway.syn_mss", "auth.tls_wss", "fault.old_tcp", "fault.controller_exit", "dns.full_mode", "cleanup.foreign_marker"):
+        for name in ("gateway.snat", "gateway.syn_mss", "auth.tls_wss", "fault.old_tcp", "dns.full_mode", "cleanup.foreign_marker"):
             report.add(name, "FAIL", "NOT_IMPLEMENTED")
 
 
